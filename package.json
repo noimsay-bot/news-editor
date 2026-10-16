@@ -1,0 +1,14 @@
+{
+  "name": "news-restoration-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "방송 취재 원본 복구·컷편집 도구 (비생성형, 오프라인)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "bin": { "restoration-cli": "cli/restoration-cli.mjs" },
+  "scripts": {
+    "test": "node --test --test-reporter=spec \"tests/**/*.test.mjs\"",
+    "self-test": "node cli/restoration-cli.mjs self-test",
+    "start": "node app/server.mjs"
+  }
+}

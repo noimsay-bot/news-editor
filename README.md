@@ -3,6 +3,17 @@
 JTBC 영상취재 원본(P2·스마트폰·고프로·오스모·드론)을 빠르게 정리하고 최대한 복구해 JTBC 인제스트 규격(XDCAM HD422 MPEG-2 50M MXF)으로 출력하는 도구.
 편집·출력 엔진은 설치된 Shotcut(MLT/FFmpeg)을 그대로 쓰고, 이 저장소는 그 위의 보조 프로그램(Node.js, 외부 의존성 없음)이다.
 
+## 복구 엔진·CLI (DEVELOPMENT_SPEC 기준, 비생성형)
+```
+npm test                                         # 자동 테스트 (합성 fixture)
+node cli/restoration-cli.mjs inspect INPUT       # 미디어 정보 JSON
+node cli/restoration-cli.mjs new INPUT --project P.json
+node cli/restoration-cli.mjs validate P.json
+node cli/restoration-cli.mjs render P.json --output OUT.wav --report R.json [--removed REMOVED.wav]
+node cli/restoration-cli.mjs self-test
+```
+명세: `DEVELOPMENT_SPEC.md`, `AGENTS.md`, `CLAUDE.md` / 진행: `docs/PROGRESS.md` / 결정: `docs/DECISIONS.md` / 시험: `docs/TEST_REPORT.md`
+
 ## 준비
 1. Shotcut 설치 (`C:\Program Files\Shotcut`)
 2. Node.js

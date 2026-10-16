@@ -173,10 +173,10 @@ tbody tr.off td:not(:first-child) { opacity: .38; }
       <section class="card">
         <div class="head"><span class="title">자동 보정 · 정렬 옵션</span></div>
         <div class="toggles">
-          <label class="toggle"><input type="checkbox" id="optShake" checked><div><b>흔들림 앞뒤 컷</b><span>4초 이상 스케치, 최대 1.5초</span></div></label>
-          <label class="toggle"><input type="checkbox" id="optWb" checked><div><b>자동 화이트밸런스</b><span>색 치우침 4% 이상</span></div></label>
-          <label class="toggle"><input type="checkbox" id="optExposure" checked><div><b>HDR 역광 보정</b><span>어두운 구역만 +스톱, 배경·채도 유지</span></div></label>
-          <label class="toggle"><input type="checkbox" id="optNoise" checked><div><b>보이스 아이솔레이션</b><span>싱크 음성(ch1·ch3 / 내장 마이크) AI 복구</span></div></label>
+          <label class="toggle"><input type="checkbox" id="optShake"><div><b>흔들림 앞뒤 컷</b><span>4초 이상 스케치, 최대 1.5초</span></div></label>
+          <label class="toggle"><input type="checkbox" id="optWb"><div><b>자동 화이트밸런스</b><span>색 치우침 4% 이상</span></div></label>
+          <label class="toggle"><input type="checkbox" id="optExposure"><div><b>HDR 역광 보정</b><span>어두운 구역만 +스톱, 배경·채도 유지</span></div></label>
+          <label class="toggle"><input type="checkbox" id="optNoise"><div><b>보이스 아이솔레이션 (연구용·검증 전)</b><span>DeepFilterNet3 · 명세서상 기본 비활성</span></div></label>
         </div>
         <div class="slider">
           <label for="hdrStrength"><span>HDR 역광 보정 강도</span><span class="hint">100 = 얼굴을 배경 1스톱 아래까지 (최대 +2스톱)</span></label>
@@ -205,7 +205,7 @@ tbody tr.off td:not(:first-child) { opacity: .38; }
           <button class="btn ghost" id="revealBtn" title="폴더 열기">📂</button>
         </div>
         <div class="fname" id="fname"></div>
-        <div class="spec">XDCAM HD422 · MPEG-2 50Mbps CBR · MXF · 1080i 29.97 TFF · PCM 16bit 2ch — EDIUS JTBC 프리셋과 동일</div>
+        <div class="spec">XDCAM HD422 · MPEG-2 50Mbps CBR · MXF · 1080i 29.97 TFF · PCM 16bit 2ch — EDIUS 프리셋 값 기준(송출 규격 미확정, 인제스트 미검증)</div>
         <div class="row" style="margin-top:12px">
           <button class="btn primary big" id="exportBtn" style="flex:1" disabled>타임라인 MPEG-2 출력</button>
           <button class="btn" id="cancelBtn" style="display:none">중지</button>

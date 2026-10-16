@@ -44,6 +44,8 @@ const settings = {
   contentsDir: defaultContentsDir(),
   hdrStrength: 100,
   voiceAmount: 100, // 음성 복구 강도: 100 = 최대(감쇠 한계 없음)
+  // DEVELOPMENT_SPEC: DeepFilterNet은 검증 전 기본 비활성. true일 때만 분석 후 미리 복구 렌더링
+  voicePrecompute: false,
   ...loadSettings(),
 };
 
@@ -131,7 +133,7 @@ function voiceBus(shot, analysis, strength, front = false) {
   return voice.restoreVoiceBus(shot, chs, strength, shotDir(shot), (ch) => queueVoice(shot, ch, strength, front));
 }
 function queueSyncVoices() {
-  if (!voice.available() || !state.lib) return;
+  if (!settings.voicePrecompute || !voice.available() || !state.lib) return;
   for (const s of state.lib.shots) {
     const a = state.analysis[s.id];
     if (a?.isSync) for (const ch of voiceChannelsFor(s, a)) queueVoice(s, ch, settings.voiceAmount);
@@ -180,7 +182,7 @@ async function runAnalysis(ids) {
         fs.mkdirSync(shotDir(shot), { recursive: true });
         fs.writeFileSync(analysisFile(shot), JSON.stringify({ version: ANALYSIS_VERSION, rules: RULES, analysis: a }));
         // 싱크로 판정되면 바로 음성 복구 예약
-        if (a.isSync && voice.available()) for (const ch of voiceChannelsFor(shot, a)) queueVoice(shot, ch, settings.voiceAmount);
+        if (settings.voicePrecompute && a.isSync && voice.available()) for (const ch of voiceChannelsFor(shot, a)) queueVoice(shot, ch, settings.voiceAmount);
       } catch (e) {
         state.analysis[shot.id] = { done: false, error: String(e.message || e) };
       }
@@ -202,7 +204,7 @@ async function shotForTimeline(shot, kind, opts, front = true) {
   const plan = basePlan(shot, analysis);
   if (kind !== 'sync') plan.voiceChannels = []; // 스케치: 양쪽 모두 현장음
   if (kind === 'sync') {
-    if (opts.noise !== false) {
+    if (opts.noise === true) { // 사용자가 켰을 때만 (기본 OFF)
       const file = await voiceBus(shot, analysis, opts.voiceAmount ?? settings.voiceAmount, front);
       if (file) {
         plan.voiceFile = file;
