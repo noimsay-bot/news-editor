@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>뉴스 원본 편집기</title>
+<style>
+:root {
+  --bg: #111317; --panel: #191c22; --panel2: #1f232b; --line: #2a2f39; --line2: #343a46;
+  --text: #e7e9ee; --muted: #8d94a3; --dim: #5d6472;
+  --accent: #f5a524; --accent2: #ffb940; --accentInk: #1a1406;
+  --sync: #4fb4ff; --sketch: #a9b0bd; --ok: #3ecf8e; --warn: #ff6b5b;
+  --radius: 10px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px/1.45 "Pretendard", "Malgun Gothic", "맑은 고딕", system-ui, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+.app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: #0d0f12; }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); display: grid; place-items: center; color: var(--accentInk); font-weight: 800; }
+header h1 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+header .sub { color: var(--muted); }
+header .engine { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; }
+.dot.bad { background: var(--warn); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; padding: 14px; min-height: 0; }
+.col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+.card.grow { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.step { color: var(--accent); font-weight: 800; font-size: 12px; letter-spacing: 1px; }
+.title { font-weight: 700; font-size: 14px; }
+.head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.row { display: flex; gap: 8px; align-items: center; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+input[type=text] { background: #0e1014; border: 1px solid var(--line2); border-radius: 7px; padding: 7px 9px; min-width: 0; outline: none; }
+input[type=text]:focus { border-color: var(--accent); }
+.btn { background: var(--panel2); border: 1px solid var(--line2); border-radius: 7px; padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { background: #2a2f39; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accentInk); font-weight: 700; }
+.btn.primary:hover { background: var(--accent2); }
+.btn.big { padding: 10px 16px; font-size: 14px; }
+.btn.ghost { background: transparent; }
+.seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 7px; overflow: hidden; }
+.seg button { background: transparent; border: 0; padding: 5px 10px; cursor: pointer; color: var(--muted); }
+.seg button.on { background: var(--panel2); color: var(--text); }
+.info { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.info b { color: var(--text); font-weight: 600; }
+/* 목록 */
+.tablewrap { flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #0e1014; min-height: 200px; }
+table { width: 100%; border-collapse: collapse; }
+thead th { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-weight: 600; text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); font-size: 12px; z-index: 1; }
+tbody td { padding: 5px 8px; border-bottom: 1px solid #1a1d23; white-space: nowrap; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: #161a20; }
+tbody tr.sel { background: #2b2414; }
+tbody tr.off td:not(:first-child) { opacity: .38; }
+.thumb { width: 54px; height: 30px; object-fit: cover; border-radius: 4px; background: #222; display: block; }
+.mono { font-family: Consolas, "D2Coding", monospace; font-size: 12px; }
+.pill { display: inline-block; min-width: 50px; text-align: center; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; border: 1px solid transparent; }
+.pill.sync { color: var(--sync); background: rgba(79,180,255,.12); border-color: rgba(79,180,255,.3); }
+.pill.sketch { color: var(--sketch); background: rgba(169,176,189,.08); border-color: rgba(169,176,189,.2); }
+.pill.none { color: var(--dim); }
+.pill.user::after { content: " ✎"; font-weight: 400; }
+.tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; margin-right: 3px; background: #262b34; color: #cfd3db; }
+.tag.wb { background: rgba(245,165,36,.14); color: var(--accent2); }
+.tag.ex { background: rgba(62,207,142,.13); color: var(--ok); }
+.tag.nr { background: rgba(79,180,255,.13); color: var(--sync); }
+.trim { color: var(--warn); }
+.progress { height: 6px; background: #0e1014; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+.progress > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+.status { min-height: 18px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.status.err { color: var(--warn); }
+.status.ok { color: var(--ok); }
+/* 미리보기 */
+.video { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; }
+.video video { width: 100%; height: 100%; display: block; }
+.video .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); }
+.scrub { position: relative; height: 10px; background: #0e1014; border-radius: 5px; margin-top: 8px; border: 1px solid var(--line); overflow: hidden; }
+.scrub .cut { position: absolute; top: 0; bottom: 0; background: rgba(255,107,91,.55); }
+.scrub .pos { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--accent); }
+.kv { display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; margin-top: 10px; font-size: 12px; }
+.kv div:nth-child(odd) { color: var(--muted); }
+.toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.toggle { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 8px; cursor: pointer; background: #15181d; }
+.toggle input { accent-color: var(--accent); margin-top: 2px; }
+.toggle b { display: block; font-weight: 600; }
+.toggle span { color: var(--muted); font-size: 11px; }
+.fname { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: #0e1014; border: 1px dashed var(--line2); font-family: Consolas, "D2Coding", monospace; word-break: break-all; }
+.fname em { color: var(--accent2); font-style: normal; }
+.spec { color: var(--dim); font-size: 11px; margin-top: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { padding: 3px 9px; border-radius: 99px; border: 1px solid var(--line2); cursor: pointer; font-size: 12px; background: #15181d; }
+.chip.on { border-color: var(--accent); color: var(--accent2); background: #2b2414; }
+.chip .x { margin-left: 6px; color: var(--dim); }
+.chip .x:hover { color: var(--warn); }
+.hint { font-size: 11px; color: var(--dim); }
+.slider { display: grid; grid-template-columns: 1fr 44px; gap: 4px 10px; align-items: center; margin-top: 10px; }
+.slider label { grid-column: 1 / -1; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+.slider input[type=range] { width: 100%; accent-color: var(--accent); }
+.slider output { font-family: Consolas, monospace; text-align: right; color: var(--accent2); }
+@media (max-width: 1100px) {
+  .app { height: auto; min-height: 100vh; }
+  main { grid-template-columns: 1fr; }
+  .tablewrap { flex: none; height: 55vh; }
+  .head { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">N</div>
+    <h1>뉴스 원본 편집기</h1>
+    <span class="sub">P2 원본 정리 · 자동 보정 · JTBC 인제스트 출력</span>
+    <span class="engine" id="engine"><span class="dot"></span>엔진 확인 중</span>
+  </header>
+  <main>
+    <div class="col">
+      <section class="card">
+        <div class="head"><span class="step">01</span><span class="title">소스</span><span class="right muted small">P2 카드 · 스마트폰 · 고프로 · 오스모 · 드론 폴더</span></div>
+        <div class="row">
+          <input type="text" id="cardDir" style="flex:1" placeholder="P2 카드(E:\CONTENTS) 또는 카메라 폴더(예: F:\DCIM)">
+          <button class="btn primary" id="loadBtn" title="목록을 새로 만듭니다">불러오기</button>
+          <button class="btn" id="addBtn" title="지금 목록에 이 폴더를 더합니다">+ 추가</button>
+        </div>
+        <div class="info" id="cardInfo">카드나 카메라 폴더를 지정하고 불러오기를 누르세요. P2는 영상·음성 4채널·연결 클립을, 고프로는 분할 파일을 한 샷으로 묶습니다. 다른 카메라 폴더는 + 추가로 더하세요.</div>
+      </section>
+
+      <section class="card grow">
+        <div class="head">
+          <span class="step">02</span><span class="title">자동 분석 · 정렬</span>
+          <div class="right">
+            <div class="seg" id="filter">
+              <button data-f="all" class="on">전체</button><button data-f="sync">싱크</button><button data-f="sketch">스케치</button>
+            </div>
+            <button class="btn" id="analyzeBtn" disabled>자동 분석</button>
+            <button class="btn primary" id="arrangeBtn" disabled>타임라인에 자동 정렬</button>
+          </div>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr>
+              <th style="width:28px"><input type="checkbox" id="allCheck" checked></th>
+              <th style="width:62px"></th><th>클립</th><th>카메라</th><th>TC</th><th>길이</th><th>분류</th><th>흔들림 컷</th><th>보정</th>
+            </tr></thead>
+            <tbody id="rows"><tr><td colspan="9" class="muted" style="padding:30px;text-align:center">카드를 불러오면 촬영 순서대로 표시됩니다.</td></tr></tbody>
+          </table>
+        </div>
+        <div class="progress" id="anProgress" style="margin-top:10px;display:none"><div></div></div>
+        <div class="status" id="anStatus"></div>
+        <div class="hint">행 클릭: 미리보기 · 분류 클릭: 싱크/스케치 바꾸기 · 체크 해제: 타임라인에서 제외 · 더블클릭: Shotcut에서 원본으로 열기</div>
+      </section>
+    </div>
+
+    <div class="col" style="overflow:auto">
+      <section class="card">
+        <div class="head"><span class="title">미리보기</span><span class="right muted small" id="pvName">—</span></div>
+        <div class="video"><video id="video" controls muted preload="metadata"></video><div class="empty" id="pvEmpty">샷을 선택하세요 (프록시 재생)</div></div>
+        <div class="scrub" id="scrub"><div class="cut" id="cutHead"></div><div class="cut" id="cutTail"></div><div class="pos" id="scrubPos"></div></div>
+        <div class="kv" id="pvInfo"></div>
+        <div id="abBox" style="display:none;margin-top:10px">
+          <div class="muted small" style="margin-bottom:6px">음성 비교 (CH1에 들어갈 음성)</div>
+          <div class="row"><span class="small" style="width:44px">원본</span><audio id="abOrig" controls preload="none" style="flex:1;height:32px"></audio></div>
+          <div class="row" style="margin-top:6px"><span class="small" style="width:44px;color:var(--accent2)">복구</span><audio id="abRest" controls preload="none" style="flex:1;height:32px"></audio></div>
+          <div class="hint" id="abHint">복구 음성은 처음 재생 시 만들어집니다(이미 복구된 샷은 바로 재생).</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="head"><span class="title">자동 보정 · 정렬 옵션</span></div>
+        <div class="toggles">
+          <label class="toggle"><input type="checkbox" id="optShake" checked><div><b>흔들림 앞뒤 컷</b><span>4초 이상 스케치, 최대 1.5초</span></div></label>
+          <label class="toggle"><input type="checkbox" id="optWb" checked><div><b>자동 화이트밸런스</b><span>색 치우침 4% 이상</span></div></label>
+          <label class="toggle"><input type="checkbox" id="optExposure" checked><div><b>HDR 역광 보정</b><span>어두운 구역만 +스톱, 배경·채도 유지</span></div></label>
+          <label class="toggle"><input type="checkbox" id="optNoise" checked><div><b>보이스 아이솔레이션</b><span>싱크 음성(ch1·ch3 / 내장 마이크) AI 복구</span></div></label>
+        </div>
+        <div class="slider">
+          <label for="hdrStrength"><span>HDR 역광 보정 강도</span><span class="hint">100 = 얼굴을 배경 1스톱 아래까지 (최대 +2스톱)</span></label>
+          <input type="range" id="hdrStrength" min="0" max="100" step="5" value="100"><output id="hdrOut">100</output>
+        </div>
+        <div class="slider">
+          <label for="voiceAmount"><span>음성 복구 강도</span><span class="hint">100 = 최대 복구 · 낮추면 현장음을 조금 남김</span></label>
+          <input type="range" id="voiceAmount" min="25" max="100" step="25" value="100"><output id="voiceOut">100</output>
+        </div>
+        <div class="status" id="vcStatus"></div>
+        <div class="status" id="arStatus"></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><span class="step">03</span><span class="title">파일명 · MPEG-2 출력</span></div>
+        <div class="row">
+          <label class="row small" style="gap:6px;cursor:pointer"><input type="checkbox" id="dateOn" style="accent-color:var(--accent)">오늘 날짜</label>
+          <input type="text" id="phrase" style="flex:1" placeholder="문구 (예: [정제본_영상취재])">
+          <button class="btn" id="savePhrase">저장</button>
+        </div>
+        <div class="chips" id="chips"></div>
+        <input type="text" id="content" style="width:100%;margin-top:8px" placeholder="내용 (예: 방통위 브리핑)">
+        <div class="row" style="margin-top:8px">
+          <span class="muted small" style="width:56px">저장 위치</span>
+          <input type="text" id="outDir" style="flex:1">
+          <button class="btn ghost" id="revealBtn" title="폴더 열기">📂</button>
+        </div>
+        <div class="fname" id="fname"></div>
+        <div class="spec">XDCAM HD422 · MPEG-2 50Mbps CBR · MXF · 1080i 29.97 TFF · PCM 16bit 2ch — EDIUS JTBC 프리셋과 동일</div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary big" id="exportBtn" style="flex:1" disabled>타임라인 MPEG-2 출력</button>
+          <button class="btn" id="cancelBtn" style="display:none">중지</button>
+        </div>
+        <div class="progress" id="exProgress" style="margin-top:10px;display:none"><div></div></div>
+        <div class="status" id="exStatus">Shotcut에서 컷편집 후 <b>Ctrl+S</b>로 저장하고 출력하세요.</div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (path, body) => {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) { const e = new Error(j.error || r.statusText); Object.assign(e, j, { status: r.status }); throw e; }
+  return j;
+};
+const FPS = 30000 / 1001;
+const fmt = (s) => { s = Math.round(s); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+const status = (el, text, cls = '') => { el.textContent = text; el.className = 'status ' + cls; };
+
+let S = { card: null, settings: {}, override: {}, include: {}, selected: null, filter: 'all', polling: false };
+
+function kindOf(shot) {
+  if (S.override[shot.name]) return S.override[shot.name];
+  if (shot.analysis?.done) return shot.analysis.isSync ? 'sync' : 'sketch';
+  return null;
+}
+
+function renderRows() {
+  const tb = $('rows');
+  if (!S.card) return;
+  const rows = [];
+  for (const s of S.card.shots) {
+    const k = kindOf(s);
+    if (S.filter !== 'all' && (k || 'sketch') !== S.filter) continue;
+    const a = s.analysis;
+    const inc = S.include[s.name] !== false;
+    // 흔들림 컷은 스케치에만 적용
+    const trim = a?.done && k === "sketch" && (a.trimHead || a.trimTail) ? `<span class="trim mono">${a.trimHead}f / ${a.trimTail}f</span>` : '<span class="muted">—</span>';
+    const tags = a?.done ? [
+      a.wbNeeded ? '<span class="tag wb">WB</span>' : '',
+      a.exposureNeeded ? '<span class="tag ex">HDR</span>' : '',
+      k === 'sync' ? '<span class="tag nr">VI</span>' : '',
+    ].join('') || '<span class="muted">—</span>' : '<span class="muted">—</span>';
+    const pill = k ? `<span class="pill ${k}${S.override[s.name] ? ' user' : ''}" data-kind="${s.name}">${k === 'sync' ? '싱크' : '스케치'}</span>` : '<span class="pill none">—</span>';
+    rows.push(`<tr data-name="${s.name}" class="${S.selected === s.name ? 'sel' : ''} ${inc ? '' : 'off'}">
+      <td><input type="checkbox" data-inc="${s.name}" ${inc ? 'checked' : ''}></td>
+      <td><img class="thumb" loading="lazy" src="/api/icon/${s.name}" alt=""></td>
+      <td><b>${s.label}</b>${s.parts.length > 1 ? ' <span class="tag">연결</span>' : ''}${s.vfr ? ' <span class="tag" title="가변 프레임(스마트폰). 편집 중 싱크가 어긋나면 알려주세요">VFR</span>' : ''}${s.vertical ? ' <span class="tag">세로</span>' : ''}${!s.hasAudio ? ' <span class="tag">무음</span>' : ''}</td>
+      <td class="small muted">${s.device || ''}</td>
+      <td class="mono">${s.startTc}</td><td class="mono">${fmt(s.seconds)}</td>
+      <td>${pill}</td><td>${trim}</td><td>${tags}</td></tr>`);
+  }
+  tb.innerHTML = rows.join('') || '<tr><td colspan="9" class="muted" style="padding:20px;text-align:center">해당하는 샷이 없습니다.</td></tr>';
+}
+
+function selectShot(name) {
+  S.selected = name;
+  const s = S.card.shots.find((x) => x.name === name);
+  renderRows();
+  $('pvName').textContent = `${s.label} · ${s.startTc}`;
+  $('pvEmpty').style.display = 'none';
+  const v = $('video');
+  v.src = `/api/proxy/${name}`;
+  const a = s.analysis;
+  const dur = s.frames;
+  const showTrim = a?.done && kindOf(s) === 'sketch';
+  $('cutHead').style.cssText = `left:0;width:${showTrim ? (a.trimHead / dur) * 100 : 0}%`;
+  $('cutTail').style.cssText = `right:0;width:${showTrim ? (a.trimTail / dur) * 100 : 0}%`;
+  v.onloadedmetadata = () => { if (showTrim && a.trimHead) v.currentTime = a.trimHead / FPS; };
+  const k = kindOf(s);
+  const info = [
+    ['분류', k ? (k === 'sync' ? '싱크' : '스케치') + (S.override[name] ? ' (직접 지정)' : '') : '분석 전'],
+    ['길이', `${fmt(s.seconds)} (${s.frames}f)${s.parts.length > 1 ? ` · ${s.parts.length}조각 이어붙임` : ''}`],
+    ['카메라', `${s.device || ''} · ${s.codec || ''}${s.vfr ? ' · 가변 프레임' : ''}`],
+  ];
+  if (a?.done) {
+    const vc = a.voiceChannelLabel || '없음';
+    info.push(['음성 채널', a.voiceChannels?.length ? `${vc} · ${a.voicedSeconds.toFixed(1)}초 · ${Math.round(a.voicedRatio * 100)}% · ${a.ch1RmsDb.toFixed(1)} dB${a.voiceDuplicate ? ' (같은 마이크 복제 → 깨끗한 쪽)' : ''}` : '음성 없음 (현장음만)']);
+    info.push(['출력 배치', k === 'sync' && a.voiceChannels?.length ? `CH1 = 복구 음성(${vc}) · CH2 = 현장음` : 'CH1·CH2 = 현장음']);
+    info.push(['흔들림 컷', k === 'sync' ? '싱크는 자르지 않음' : a.trimHead || a.trimTail ? `앞 ${a.trimHead}f · 뒤 ${a.trimTail}f` : '없음']);
+    info.push(['화이트밸런스', a.wbNeeded ? `보정 · 중성색 ${a.wbNeutral}` : '보정 불필요']);
+    info.push(['HDR 역광', a.exposureNeeded && a.hdr ? `얼굴 구역 +${a.hdr.exposureStops.toFixed(1)}스톱 (얼굴 ${Math.round(a.subjectLuma)} · 배경 ${Math.round(a.backgroundLuma)})` : '해당 없음']);
+  }
+  $('pvInfo').innerHTML = info.map(([k2, v2]) => `<div>${k2}</div><div>${v2}</div>`).join('');
+  const showAb = k === 'sync' && S.voiceAvailable;
+  $('abBox').style.display = showAb ? '' : 'none';
+  if (showAb) {
+    $('abOrig').src = `/api/audio/${name}?kind=orig`;
+    $('abRest').src = `/api/audio/${name}?kind=restored&a=${$('voiceAmount').value}`;
+  } else { $('abOrig').removeAttribute('src'); $('abRest').removeAttribute('src'); }
+}
+
+$('video').addEventListener('timeupdate', () => {
+  const v = $('video');
+  if (v.duration) $('scrubPos').style.left = `${(v.currentTime / v.duration) * 100}%`;
+});
+
+$('rows').addEventListener('click', (e) => {
+  const inc = e.target.dataset.inc;
+  if (inc) { S.include[inc] = e.target.checked; renderRows(); return; }
+  const kn = e.target.dataset.kind;
+  if (kn) {
+    const s = S.card.shots.find((x) => x.name === kn);
+    S.override[kn] = kindOf(s) === 'sync' ? 'sketch' : 'sync';
+    renderRows();
+    if (S.selected === kn) selectShot(kn);
+    return;
+  }
+  const tr = e.target.closest('tr[data-name]');
+  if (tr) selectShot(tr.dataset.name);
+});
+$('rows').addEventListener('dblclick', (e) => {
+  const tr = e.target.closest('tr[data-name]');
+  if (tr && !e.target.dataset.kind && !e.target.dataset.inc) api('/api/preview', { name: tr.dataset.name });
+});
+$('allCheck').addEventListener('change', (e) => {
+  for (const s of S.card?.shots || []) S.include[s.name] = e.target.checked;
+  renderRows();
+});
+$('filter').addEventListener('click', (e) => {
+  const f = e.target.dataset.f; if (!f) return;
+  S.filter = f;
+  [...$('filter').children].forEach((b) => b.classList.toggle('on', b.dataset.f === f));
+  renderRows();
+});
+
+function showCard(card) {
+  S.card = card;
+  const spanned = card.shots.filter((x) => x.parts.length > 1).length;
+  const src = card.sources.map((x) => `<div>• ${x.label} <span class="mono">${x.dir}</span></div>`).join('');
+  const uns = card.unsupported.length
+    ? `<details style="margin-top:4px"><summary style="color:var(--warn);cursor:pointer">편집할 수 없는 파일 ${card.unsupported.length}개</summary>${card.unsupported.slice(0, 20).map((u) => `<div class="small">${u.file.split(/[\\/]/).pop()} — ${u.reason}</div>`).join('')}</details>`
+    : '';
+  $('cardInfo').innerHTML = `샷 <b>${card.shots.length}</b>개 (연결·분할 ${spanned}개 합침) · 총 ${fmt(card.totalSeconds)}${src}${uns}`;
+  $('analyzeBtn').disabled = false;
+  $('arrangeBtn').disabled = false;
+  renderRows();
+  const analyzed = card.shots.filter((s) => s.analysis?.done).length;
+  if (analyzed) status($('anStatus'), `이전 분석 결과 ${analyzed}개를 불러왔습니다.`);
+}
+
+async function loadSource(append) {
+  try {
+    $('loadBtn').disabled = $('addBtn').disabled = true;
+    if (!append) { S.override = {}; S.include = {}; }
+    showCard(await api('/api/sources', { dir: $('cardDir').value.trim(), append }));
+    const todo = S.card.shots.filter((x) => !x.analysis?.done).length;
+    if (todo) status($('anStatus'), `분석하지 않은 샷 ${todo}개 · 자동 분석을 누르세요.`);
+  } catch (e) { $('cardInfo').innerHTML += `<div style="color:var(--warn)">${e.message}</div>`; }
+  finally { $('loadBtn').disabled = $('addBtn').disabled = false; }
+}
+$('loadBtn').onclick = () => loadSource(false);
+$('addBtn').onclick = () => loadSource(true);
+
+$('analyzeBtn').onclick = async () => {
+  try {
+    await api('/api/analyze', {});
+    $('analyzeBtn').disabled = true;
+    $('anProgress').style.display = '';
+    status($('anStatus'), '분석 중… 프록시와 채널1 음성만 읽어 원본보다 훨씬 빠릅니다.');
+    poll();
+  } catch (e) { status($('anStatus'), e.message, 'err'); }
+};
+
+async function poll() {
+  if (S.polling) return;
+  S.polling = true;
+  try {
+    while (true) {
+      const p = await api('/api/progress');
+      if (p.job) {
+        $('anProgress').firstElementChild.style.width = `${(p.job.done / Math.max(1, p.job.total)) * 100}%`;
+        if (p.analysis && S.card) {
+          for (const s of S.card.shots) if (p.analysis[s.name]) s.analysis = p.analysis[s.name];
+          renderRows();
+        }
+      }
+      const ex = p.exportJob;
+      if (ex) updateExport(ex);
+      if (p.voice) updateVoice(p.voice);
+      const anBusy = p.job && !p.job.finished;
+      const exBusy = ex && !ex.finished;
+      const vcBusy = p.voice && (p.voice.running || p.voice.queued);
+      if (p.job?.finished && $('analyzeBtn').disabled) await finishAnalysis();
+      if (!anBusy && !exBusy && !vcBusy && !S.arranging) break;
+      await new Promise((r) => setTimeout(r, 700));
+    }
+  } finally { S.polling = false; }
+}
+
+async function finishAnalysis() {
+  const st = await api('/api/state');
+  showCard(st.card);
+  $('analyzeBtn').disabled = false;
+  $('anProgress').style.display = 'none';
+  const shots = st.card.shots;
+  const sync = shots.filter((s) => kindOf(s) === 'sync').length;
+  const trimmed = shots.filter((s) => kindOf(s) === 'sketch' && (s.analysis?.trimHead || s.analysis?.trimTail)).length;
+  const wb = shots.filter((s) => s.analysis?.wbNeeded).length;
+  const ex = shots.filter((s) => s.analysis?.exposureNeeded).length;
+  poll();
+  status($('anStatus'), `분석 완료 · 싱크 ${sync} · 스케치 ${shots.length - sync} · 흔들림 컷 ${trimmed} · WB ${wb} · 역광 인물 ${ex}. 분류가 틀리면 분류 칸을 클릭해 바꾸세요.`, 'ok');
+  if (S.selected) selectShot(S.selected);
+}
+
+$('arrangeBtn').onclick = async () => {
+  const shots = S.card.shots;
+  if (!shots.some((s) => s.analysis?.done) && !confirm('아직 분석하지 않았습니다. 모두 스케치로 배치할까요?')) return;
+  const items = shots.map((s) => ({ name: s.name, kind: kindOf(s) || 'sketch', include: S.include[s.name] !== false }));
+  const opts = { shake: $('optShake').checked, wb: $('optWb').checked, exposure: $('optExposure').checked, noise: $('optNoise').checked, hdrStrength: Number($('hdrStrength').value), voiceAmount: Number($('voiceAmount').value) };
+  try {
+    $('arrangeBtn').disabled = true;
+    S.arranging = true;
+    status($('arStatus'), '정렬 준비 중… 싱크 음성 복구가 끝나는 대로 Shotcut을 엽니다.');
+    poll();
+    const r = await api('/api/arrange', { items, opts });
+    status($('arStatus'), `Shotcut에서 타임라인을 엽니다 · V1 싱크 ${r.syncCount}개 → V2 스케치 ${r.sketchCount}개 · 총 ${fmt(r.total / FPS)}. 컷편집 후 Ctrl+S로 저장하세요.`, 'ok');
+    $('exportBtn').disabled = false;
+  } catch (e) { status($('arStatus'), e.message, 'err'); }
+  finally { $('arrangeBtn').disabled = false; S.arranging = false; }
+};
+
+// ---------------- 파일명
+const today = () => { const d = new Date(); return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; };
+function fileBase() {
+  const parts = [];
+  if ($('dateOn').checked) parts.push(today());
+  if ($('phrase').value.trim()) parts.push($('phrase').value.trim());
+  if ($('content').value.trim()) parts.push($('content').value.trim());
+  return parts.join(' ').replace(/[\\/:*?"<>|]/g, '') || '출력';
+}
+function renderName() {
+  const base = fileBase();
+  const d = $('dateOn').checked ? today() : null;
+  const html = (d && base.startsWith(d) ? `<em>${d}</em>${base.slice(d.length)}` : base) + '.mxf';
+  $('fname').innerHTML = html;
+}
+function renderChips() {
+  $('chips').innerHTML = (S.settings.phrases || []).map((p, i) =>
+    `<span class="chip ${p === $('phrase').value.trim() ? 'on' : ''}" data-i="${i}">${p}<span class="x" data-del="${i}">×</span></span>`).join('');
+}
+let saveTimer;
+function persist() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => api('/api/settings', { phrase: $('phrase').value, dateOn: $('dateOn').checked, outDir: $('outDir').value, phrases: S.settings.phrases }), 400);
+}
+for (const id of ['dateOn', 'phrase', 'content', 'outDir']) $(id).addEventListener('input', () => { renderName(); renderChips(); persist(); });
+$('savePhrase').onclick = () => {
+  const p = $('phrase').value.trim(); if (!p) return;
+  S.settings.phrases = [p, ...(S.settings.phrases || []).filter((x) => x !== p)];
+  renderChips(); persist();
+};
+$('chips').addEventListener('click', (e) => {
+  if (e.target.dataset.del !== undefined) {
+    S.settings.phrases.splice(Number(e.target.dataset.del), 1);
+  } else if (e.target.closest('.chip')) {
+    $('phrase').value = S.settings.phrases[Number(e.target.closest('.chip').dataset.i)];
+  }
+  renderName(); renderChips(); persist();
+});
+$('revealBtn').onclick = () => api('/api/reveal', { path: $('outDir').value });
+for (const [id, out] of [['hdrStrength', 'hdrOut'], ['voiceAmount', 'voiceOut']]) {
+  $(id).addEventListener('input', () => {
+    $(out).textContent = $(id).value;
+    api('/api/settings', { [id]: Number($(id).value) });
+  });
+}
+
+// ---------------- 출력
+async function doExport(overwrite) {
+  try {
+    const r = await api('/api/export', { filename: fileBase(), outDir: $('outDir').value, overwrite });
+    $('exportBtn').disabled = true;
+    $('cancelBtn').style.display = '';
+    $('exProgress').style.display = '';
+    status($('exStatus'), r.savedInShotcut ? '출력 중…' : '출력 중… (Shotcut에서 저장하지 않은 자동 정렬 상태 그대로 출력합니다)');
+    poll();
+  } catch (e) {
+    if (e.code === 'EXISTS') { if (confirm(`같은 이름의 파일이 있습니다. 덮어쓸까요?\n${e.target}`)) doExport(true); }
+    else status($('exStatus'), e.message, 'err');
+  }
+}
+$('exportBtn').onclick = () => doExport(false);
+$('cancelBtn').onclick = () => api('/api/export/cancel', {});
+function updateVoice(v) {
+  if (!v.available) { status($('vcStatus'), 'DeepFilterNet이 없어 RNNoise로 대체합니다 (app\\bin\\deep-filter.exe 필요).', 'err'); return; }
+  if (!v.total) { $('vcStatus').textContent = ''; return; }
+  const busy = v.running || v.queued;
+  status($('vcStatus'), busy
+    ? `음성 복구 중 (DeepFilterNet3) · ${v.done}/${v.total} 채널 완료${v.failed ? ` · 실패 ${v.failed}` : ''}`
+    : `음성 복구 준비 완료 · ${v.done - v.failed}/${v.total} 채널${v.failed ? ` · 실패 ${v.failed}` : ''}`, busy ? '' : 'ok');
+}
+function updateExport(ex) {
+  $('exProgress').firstElementChild.style.width = `${ex.percent}%`;
+  if (!ex.finished) { status($('exStatus'), `출력 중… ${ex.percent}%`); return; }
+  $('exportBtn').disabled = false;
+  $('cancelBtn').style.display = 'none';
+  $('exProgress').style.display = 'none';
+  if (ex.ok) {
+    $('exStatus').className = 'status ok';
+    $('exStatus').innerHTML = `완료 (${Math.round(ex.seconds)}초) · <span class="mono">${ex.target}</span> <a href="#" id="openOut" style="color:var(--accent2)">폴더 열기</a>`;
+    $('openOut').onclick = (e) => { e.preventDefault(); api('/api/reveal', { path: ex.target }); };
+  } else status($('exStatus'), '출력 실패 또는 중지됨. 로그는 서버 창을 확인하세요.', 'err');
+}
+
+// ---------------- 시작
+(async () => {
+  const st = await api('/api/state');
+  S.settings = st.settings;
+  S.voiceAvailable = st.voice?.available;
+  if (st.voice) updateVoice(st.voice);
+  if (st.voice && (st.voice.running || st.voice.queued)) poll();
+  $('engine').innerHTML = `<span class="dot ${st.engine.ok ? '' : 'bad'}"></span>${st.engine.ok ? 'Shotcut 엔진 연결됨' : 'Shotcut 엔진 없음'} · <span class="mono">${st.engine.shotcutDir}</span>`;
+  $('cardDir').value = st.settings.contentsDir || 'E:\\CONTENTS';
+  $('phrase').value = st.settings.phrase || '';
+  $('dateOn').checked = st.settings.dateOn !== false;
+  $('outDir').value = st.settings.outDir || '';
+  for (const [id, out, def] of [['hdrStrength', 'hdrOut', 100], ['voiceAmount', 'voiceOut', 100]]) {
+    $(id).value = st.settings[id] ?? def;
+    $(out).textContent = $(id).value;
+  }
+  renderName(); renderChips();
+  if (st.card) showCard(st.card);
+  if (st.project) $('exportBtn').disabled = false;
+  if ((st.job && !st.job.finished) || (st.exportJob && !st.exportJob.finished)) poll();
+})();
+</script>
+</body>
+</html>

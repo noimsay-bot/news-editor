@@ -1,0 +1,16 @@
+# 실행 로그
+*.log
+
+# 취재 원본에서 나온 렌더·시험 파일 (사내 영상 — 저장소에 올리지 않음)
+p2-render/
+p2-test/
+test-media/
+
+# Shotcut 공식 저장소 복제본 (변경분은 shotcut-patch/에 패치로 보관)
+shotcut/
+
+# DaVinci Resolve 매뉴얼 텍스트 추출본 (Blackmagic 저작물 — 분석 요약 문서만 보관)
+research/resolve_manual.txt
+
+# 외부 실행 파일 (tools/get-deep-filter.ps1로 공식 배포본을 받아 해시 검증)
+app/bin/*.exe

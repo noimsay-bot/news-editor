@@ -1,0 +1,1974 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 3721536..6edc495 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -91,6 +91,9 @@ add_executable(shotcut WIN32 MACOSX_BUNDLE
+   mainwindow.ui
+   mltcontroller.cpp mltcontroller.h
+   mltxmlchecker.cpp mltxmlchecker.h
++  news/newsanalyzer.cpp news/newsanalyzer.h
++  news/newsdock.cpp news/newsdock.h
++  news/p2card.cpp news/p2card.h
+   models/actionsmodel.cpp models/actionsmodel.h
+   models/addonservicemodel.cpp models/addonservicemodel.h
+   models/alignclipsmodel.cpp models/alignclipsmodel.h
+diff --git a/src/docks/encodedock.cpp b/src/docks/encodedock.cpp
+index 2abbdf4..abd1e8e 100644
+--- a/src/docks/encodedock.cpp
++++ b/src/docks/encodedock.cpp
+@@ -2038,6 +2038,39 @@ void EncodeDock::on_presetsTree_clicked(const QModelIndex &index)
+     }
+ }
+ 
++bool EncodeDock::exportNewsXdcam(const QString &target)
++{
++    if (!MLT.producer() || !m_presets || !m_presets->is_valid() || target.isEmpty())
++        return false;
++    // EDIUS JTBC 프리셋과 같은 규격: XDCAM HD422, MPEG-2 50Mbps CBR, MXF, 1080i TFF, PCM 16bit 2ch
++    Mlt::Properties preset((mlt_properties) m_presets->get_data("consumer/avformat/XDCAM-HD422"));
++    if (!preset.is_valid())
++        return false;
++    resetOptions();
++    setResolutionAspectFromProfile();
++    ui->scanModeCombo->setCurrentIndex(0);
++    on_scanModeCombo_currentIndexChanged(0);
++    loadPresetFromProperties(preset);
++    ui->fieldOrderCombo->setCurrentIndex(1);
++    setAudioChannels(2);
++    const int fromIndex = ui->fromCombo->findData("timeline");
++    if (fromIndex < 0)
++        return false;
++    ui->fromCombo->setCurrentIndex(fromIndex);
++    if (checkForMissingFiles())
++        return false;
++
++    MLT.pause();
++    m_outputFilenames = QStringList(target);
++    Settings.setEncodePath(QFileInfo(target).path());
++    MLT.purgeMemoryPool();
++    int threadCount = QThread::idealThreadCount();
++    threadCount = threadCount > 2 ? qMin(threadCount - 1, 4) : 1;
++    enqueueAnalysis();
++    enqueueMelt(m_outputFilenames, Settings.playerGPU() ? -1 : -threadCount);
++    return true;
++}
++
+ void EncodeDock::on_presetsTree_activated(const QModelIndex &index)
+ {
+     on_presetsTree_clicked(index);
+diff --git a/src/docks/encodedock.h b/src/docks/encodedock.h
+index 447b35c..054ec47 100644
+--- a/src/docks/encodedock.h
++++ b/src/docks/encodedock.h
+@@ -56,6 +56,8 @@ public:
+ 
+     void loadPresetFromProperties(Mlt::Properties &);
+     bool isExportInProgress() const;
++    // 뉴스 원본 편집기: 타임라인을 JTBC 인제스트 규격(XDCAM HD422 MPEG-2 50M MXF)으로 출력
++    bool exportNewsXdcam(const QString &target);
+ 
+ signals:
+     void captureStateChanged(bool);
+diff --git a/src/main.cpp b/src/main.cpp
+index 7f39d83..21a1e59 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -196,7 +196,9 @@ public:
+ #else
+         setOrganizationDomain("meltytech.com");
+ #endif
+-        setApplicationName("Shotcut");
++        // 설치된 Shotcut과 설정이 섞이지 않도록 별도 이름을 쓴다.
++        setApplicationName("NewsEditor");
++        setApplicationDisplayName(QString::fromUtf8("뉴스 원본 편집기"));
+         setApplicationVersion(SHOTCUT_VERSION);
+ 
+         // Process command line options.
+diff --git a/src/mainwindow.cpp b/src/mainwindow.cpp
+index abeee16..3f157ae 100644
+--- a/src/mainwindow.cpp
++++ b/src/mainwindow.cpp
+@@ -37,6 +37,7 @@
+ #include "dialogs/unlinkedfilesdialog.h"
+ #include "docks/elementsdock.h"
+ #include "docks/encodedock.h"
++#include "news/newsdock.h"
+ #include "docks/filesdock.h"
+ #include "docks/filtersdock.h"
+ #include "docks/findanalysisfilterparser.h"
+@@ -138,7 +139,7 @@ static bool eventDebugCallback(void **data)
+ static constexpr int AUTOSAVE_TIMEOUT_MS = 60000;
+ // Bump kDockLayoutVersion whenever a new dock is added to setupAndConnectDocks().
+ // This triggers a one-time re-tabification for users upgrading from an older saved state.
+-static constexpr int kDockLayoutVersion = 1;
++static constexpr int kDockLayoutVersion = 2;
+ static constexpr char kReservedLayoutPrefix[] = "__%1";
+ static constexpr char kLayoutSwitcherName[] = "layoutSwitcherGrid";
+ static QRegularExpression kBackupFileRegex("^(.+) "
+@@ -917,7 +918,12 @@ void MainWindow::setupAndConnectDocks()
+             &MainWindow::onCreateOrEditFilterOnOutput);
+     connect(m_timelineDock->subtitlesModel(), SIGNAL(modified()), this, SLOT(onSubtitleModified()));
+ 
++    // 뉴스 원본 편집 패널 (P2 불러오기 · 자동 분석 · JTBC 출력)
++    m_newsDock = new NewsDock(this);
++    ui->menuView->addAction(m_newsDock->toggleViewAction());
++
+     // Left area
++    addDockWidget(Qt::LeftDockWidgetArea, m_newsDock);
+     addDockWidget(Qt::LeftDockWidgetArea, m_propertiesDock);
+     addDockWidget(Qt::LeftDockWidgetArea, m_playlistDock);
+     addDockWidget(Qt::LeftDockWidgetArea, m_filtersDock);
+@@ -929,6 +935,7 @@ void MainWindow::setupAndConnectDocks()
+     tabifyDockWidget(m_filtersDock, m_encodeDock);
+     tabifyDockWidget(m_encodeDock, m_notesDock);
+     tabifyDockWidget(m_notesDock, m_subtitlesDock);
++    tabifyDockWidget(m_subtitlesDock, m_newsDock);
+     // Right area
+     addDockWidget(Qt::RightDockWidgetArea, m_recentDock);
+     addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
+@@ -2749,6 +2756,9 @@ void MainWindow::readWindowSettings()
+         }
+     } else {
+         restoreState(kLayoutEditingDefault);
++        // 첫 실행: 뉴스 패널을 앞에 보여준다.
++        m_newsDock->show();
++        m_newsDock->raise();
+     }
+     LOG_DEBUG() << "end";
+ }
+@@ -3089,12 +3099,12 @@ void MainWindow::updateWindowTitle()
+         profileText = tr("Automatic");
+ #ifdef Q_OS_MAC
+     setWindowTitle(
+-        QStringLiteral("%1 - %2 - %3").arg(shownName).arg(profileText).arg(qApp->applicationName()));
++        QStringLiteral("%1 - %2 - %3").arg(shownName).arg(profileText).arg(qApp->applicationDisplayName()));
+ #else
+     setWindowTitle(QStringLiteral("%1[*] - %2 - %3")
+                        .arg(shownName)
+                        .arg(profileText)
+-                       .arg(qApp->applicationName()));
++                       .arg(qApp->applicationDisplayName()));
+ #endif
+ }
+ 
+diff --git a/src/mainwindow.h b/src/mainwindow.h
+index 5fa9b32..f957653 100644
+--- a/src/mainwindow.h
++++ b/src/mainwindow.h
+@@ -55,6 +55,7 @@ class KeyframesDock;
+ class MarkersDock;
+ class NotesDock;
+ class SubtitlesDock;
++class NewsDock;
+ class ScreenCapture;
+ class HdrPreviewWindow;
+ 
+@@ -75,6 +76,7 @@ public:
+     static void changeTheme(const QString &theme);
+     PlaylistDock *playlistDock() const { return m_playlistDock; }
+     TimelineDock *timelineDock() const { return m_timelineDock; }
++    EncodeDock *encodeDock() const { return m_encodeDock; }
+     FilterController *filterController() const { return m_filterController; }
+     Mlt::Playlist *playlist() const;
+     bool isPlaylistValid() const;
+@@ -226,6 +228,7 @@ private:
+     MarkersDock *m_markersDock;
+     NotesDock *m_notesDock;
+     SubtitlesDock *m_subtitlesDock;
++    NewsDock *m_newsDock;
+     std::unique_ptr<QWidget> m_producerWidget;
+     FilesDock *m_filesDock;
+     ElementsDock *m_elementsDock;
+diff --git a/src/news/newsanalyzer.cpp b/src/news/newsanalyzer.cpp
+new file mode 100644
+index 0000000..b4290bb
+--- /dev/null
++++ b/src/news/newsanalyzer.cpp
+@@ -0,0 +1,314 @@
++/*
++ * Copyright (c) 2026 JTBC News
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "newsanalyzer.h"
++
++#include <QCoreApplication>
++#include <QDir>
++#include <QElapsedTimer>
++#include <QFileInfo>
++#include <QProcess>
++#include <QRegularExpression>
++#include <QStandardPaths>
++
++#include <algorithm>
++#include <cmath>
++
++namespace {
++
++// 분석 기준값 — E:\CONTENTS 실측(2026-10-15)으로 정함
++constexpr double kSpeechMinSeconds = 2.0;  // 채널1 음성 최소 길이
++constexpr double kSpeechMinRatio = 0.35;   // 분석 구간 중 음성 비율
++constexpr double kSpeechMinRmsDb = -45.0;  // 채널1 평균 레벨
++constexpr double kSpeechWindowSec = 30.0;  // 앞 30초만 분석
++constexpr int kShakeMinFrames = 120;       // 4초 이상 스케치만
++constexpr int kShakeWindowFrames = 60;     // 앞/뒤 2초 검사
++constexpr int kShakeMaxTrim = 45;          // 최대 1.5초까지만 자름
++constexpr int kShakeEdgeFrames = 6;        // 흔들림이 0.2초 안에 시작해야 녹화 흔들림으로 봄
++constexpr int kShakeCalmRun = 8;           // 이만큼 연속으로 안정되면 흔들림 끝
++constexpr int kMinRemainFrames = 90;       // 자른 뒤 최소 3초는 남김
++constexpr int kGridW = 32;
++constexpr int kGridH = 18;
++
++double median(QVector<float> v)
++{
++    if (v.isEmpty())
++        return 0.0;
++    std::sort(v.begin(), v.end());
++    return v[v.size() / 2];
++}
++
++QVector<float> parseMotion(const QByteArray &out)
++{
++    QVector<float> motion;
++    static const QRegularExpression re("YAVG=([0-9.]+)");
++    auto it = re.globalMatch(QString::fromLatin1(out));
++    while (it.hasNext())
++        motion << it.next().captured(1).toFloat();
++    return motion;
++}
++
++// 가장자리에서 시작한 흔들림이 끝나는 위치 (프레임 수). 없으면 0.
++int edgeShake(const QVector<float> &m, double thr)
++{
++    int firstShaky = -1;
++    for (int i = 0; i < std::min<int>(kShakeEdgeFrames, m.size()); i++) {
++        if (m[i] > thr) {
++            firstShaky = i;
++            break;
++        }
++    }
++    if (firstShaky < 0)
++        return 0;
++    int lastShaky = firstShaky;
++    int calm = 0;
++    for (int i = firstShaky; i < m.size() && i < kShakeMaxTrim + kShakeCalmRun; i++) {
++        if (m[i] > thr) {
++            lastShaky = i;
++            calm = 0;
++        } else if (++calm >= kShakeCalmRun) {
++            break;
++        }
++    }
++    // tblend 차이값 i는 프레임 i와 i+1 사이 → 흔들린 마지막 프레임 다음 + 여유 1프레임
++    return std::min(lastShaky + 2, kShakeMaxTrim);
++}
++
++} // namespace
++
++QString NewsAnalyzer::ffmpegPath()
++{
++    QDir dir(QCoreApplication::applicationDirPath());
++#ifdef Q_OS_WIN
++    const QString exe = "ffmpeg.exe";
++#else
++    const QString exe = "ffmpeg";
++#endif
++    if (dir.exists(exe))
++        return dir.absoluteFilePath(exe);
++    const QString found = QStandardPaths::findExecutable("ffmpeg");
++    return found.isEmpty() ? exe : found;
++}
++
++QByteArray NewsAnalyzer::run(const QStringList &args, int timeoutMs, bool stdoutOnly)
++{
++    QProcess p;
++    p.setProcessChannelMode(stdoutOnly ? QProcess::SeparateChannels : QProcess::MergedChannels);
++    p.start(ffmpegPath(), QStringList{"-hide_banner", "-nostats"} + args);
++    if (!p.waitForStarted(5000))
++        return {};
++    p.closeWriteChannel();
++    QByteArray out;
++    QElapsedTimer timer;
++    timer.start();
++    while (p.state() != QProcess::NotRunning) {
++        p.waitForReadyRead(1000);
++        out += p.readAllStandardOutput();
++        if (timer.elapsed() > timeoutMs) {
++            p.kill();
++            p.waitForFinished(2000);
++            break;
++        }
++    }
++    out += p.readAllStandardOutput();
++    return out;
++}
++
++void NewsAnalyzer::analyzeSpeech(const QString &ch1Path, double shotSeconds, ShotAnalysis &out)
++{
++    const double window = std::min(shotSeconds, kSpeechWindowSec);
++    const QByteArray log = run({"-t",
++                                QString::number(window, 'f', 2),
++                                "-i",
++                                ch1Path,
++                                "-af",
++                                "highpass=f=200,lowpass=f=3500,astats=metadata=0,"
++                                "silencedetect=n=-40dB:d=0.35",
++                                "-f",
++                                "null",
++                                "-"},
++                               60000,
++                               false);
++    const QString s = QString::fromUtf8(log);
++    double silence = 0.0;
++    static const QRegularExpression reSil("silence_duration: ([0-9.]+)");
++    auto it = reSil.globalMatch(s);
++    while (it.hasNext())
++        silence += it.next().captured(1).toDouble();
++    static const QRegularExpression reRms("RMS level dB: (-?[0-9.]+|-inf)");
++    auto m = reRms.match(s);
++    out.ch1RmsDb = (m.hasMatch() && m.captured(1) != "-inf") ? m.captured(1).toDouble() : -100.0;
++    out.voicedSeconds = std::max(0.0, window - silence);
++    out.voicedRatio = window > 0 ? out.voicedSeconds / window : 0.0;
++    out.isSync = out.voicedSeconds >= kSpeechMinSeconds && out.voicedRatio >= kSpeechMinRatio
++                 && out.ch1RmsDb >= kSpeechMinRmsDb;
++}
++
++void NewsAnalyzer::computeTrim(const QVector<float> &headMotion,
++                               const QVector<float> &tailMotion,
++                               int shotFrames,
++                               int &head,
++                               int &tail)
++{
++    head = tail = 0;
++    if (shotFrames < kShakeMinFrames)
++        return;
++    const double base = median(headMotion + tailMotion);
++    const double thr = std::max(2.0, base * 3.0);
++    head = edgeShake(headMotion, thr);
++    QVector<float> rev(tailMotion.rbegin(), tailMotion.rend());
++    tail = edgeShake(rev, thr);
++    // 남는 길이가 너무 짧으면 비율대로 줄인다.
++    const int maxTotal = std::max(0, shotFrames - kMinRemainFrames);
++    if (head + tail > maxTotal) {
++        const double k = (head + tail) > 0 ? double(maxTotal) / (head + tail) : 0.0;
++        head = int(head * k);
++        tail = int(tail * k);
++    }
++}
++
++void NewsAnalyzer::analyzeShake(const QString &proxyPath, int shotFrames, ShotAnalysis &out)
++{
++    out.trimHead = out.trimTail = 0;
++    if (shotFrames < kShakeMinFrames || !QFileInfo::exists(proxyPath))
++        return;
++    const QString filter = "scale=160:90,format=gray,tblend=all_mode=difference,signalstats,"
++                           "metadata=print:key=lavfi.signalstats.YAVG:file=-";
++    const QString secs = QString::number(kShakeWindowFrames * 1001.0 / 30000.0, 'f', 3);
++    const auto headMotion = parseMotion(
++        run({"-t", secs, "-i", proxyPath, "-an", "-vf", filter, "-f", "null", "-"}, 30000, true));
++    const auto tailMotion = parseMotion(
++        run({"-sseof", "-" + secs, "-i", proxyPath, "-an", "-vf", filter, "-f", "null", "-"},
++            30000,
++            true));
++    computeTrim(headMotion, tailMotion, shotFrames, out.trimHead, out.trimTail);
++}
++
++void NewsAnalyzer::analyzeColor(const QString &proxyPath, double shotSeconds, ShotAnalysis &out)
++{
++    out.wbNeeded = false;
++    out.exposureNeeded = false;
++    if (!QFileInfo::exists(proxyPath))
++        return;
++    // 샷 전체에서 고르게 8프레임 (긴 샷은 앞 60초 안에서)
++    const double span = std::min(std::max(shotSeconds, 1.0), 60.0);
++    const QString vf = QStringLiteral("fps=%1,scale=%2:%3:flags=area,format=rgb24")
++                           .arg(8.0 / span, 0, 'f', 4)
++                           .arg(kGridW)
++                           .arg(kGridH);
++    const QByteArray raw = run({"-t",
++                                QString::number(span, 'f', 2),
++                                "-i",
++                                proxyPath,
++                                "-an",
++                                "-vf",
++                                vf,
++                                "-f",
++                                "rawvideo",
++                                "-"},
++                               30000,
++                               true);
++    const int frameBytes = kGridW * kGridH * 3;
++    const int frames = raw.size() / frameBytes;
++    if (frames <= 0)
++        return;
++
++    // 셀별 평균 휘도, 그레이월드 평균
++    QVector<double> luma(kGridW * kGridH, 0.0);
++    double sr = 0, sg = 0, sb = 0;
++    long count = 0;
++    const auto *d = reinterpret_cast<const unsigned char *>(raw.constData());
++    for (int f = 0; f < frames; f++) {
++        for (int i = 0; i < kGridW * kGridH; i++) {
++            const int r = d[f * frameBytes + i * 3];
++            const int g = d[f * frameBytes + i * 3 + 1];
++            const int b = d[f * frameBytes + i * 3 + 2];
++            const double y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
++            luma[i] += y / frames;
++            if (y > 40 && y < 220 && std::max({r, g, b}) < 250) {
++                sr += r;
++                sg += g;
++                sb += b;
++                count++;
++            }
++        }
++    }
++
++    // 자동 화이트밸런스: 그레이월드. 색 치우침이 4% 이상일 때만, 70%만 보정해 과보정 방지.
++    if (count > 50) {
++        sr /= count;
++        sg /= count;
++        sb /= count;
++        const double mean = (sr + sg + sb) / 3.0;
++        const double dev = std::max({std::abs(sr - mean), std::abs(sg - mean), std::abs(sb - mean)})
++                           / mean;
++        if (dev > 0.04 && dev < 0.35) {
++            auto neutral = [&](double c) {
++                return std::clamp(int(std::lround(127.0 * (mean + (c - mean) * 0.7) / mean)), 0, 255);
++            };
++            out.wbNeeded = true;
++            out.wbNeutral = QColor(neutral(sr), neutral(sg), neutral(sb));
++        }
++    }
++
++    // 인물 부분 노출: 화면 중앙 아래쪽(인터뷰 피사체 자리)이 바깥보다 확연히 어두우면
++    auto cell = [&](int x, int y) { return luma[y * kGridW + x]; };
++    double centerSum = 0, outerSum = 0;
++    int centerN = 0, outerN = 0;
++    for (int y = 0; y < kGridH; y++) {
++        for (int x = 0; x < kGridW; x++) {
++            const bool center = x >= 10 && x < 22 && y >= 4;
++            (center ? centerSum : outerSum) += cell(x, y);
++            (center ? centerN : outerN)++;
++        }
++    }
++    const double lc = centerSum / centerN;
++    const double lo = outerSum / outerN;
++    out.subjectLuma = lc;
++    out.backgroundLuma = lo;
++    if (lo - lc >= 28.0 && lc <= 120.0) {
++        const double darkThr = lc + (lo - lc) * 0.4;
++        int x0 = kGridW, y0 = kGridH, x1 = -1, y1 = -1, n = 0;
++        for (int y = 2; y < kGridH; y++) {
++            for (int x = 6; x < kGridW - 6; x++) {
++                if (cell(x, y) < darkThr) {
++                    x0 = std::min(x0, x);
++                    y0 = std::min(y0, y);
++                    x1 = std::max(x1, x);
++                    y1 = std::max(y1, y);
++                    n++;
++                }
++            }
++        }
++        if (n >= 12) {
++            // 여유 1칸
++            x0 = std::max(0, x0 - 1);
++            y0 = std::max(0, y0 - 1);
++            x1 = std::min(kGridW - 1, x1 + 1);
++            y1 = std::min(kGridH - 1, y1 + 1);
++            out.subjectRect = QRectF(double(x0) / kGridW,
++                                     double(y0) / kGridH,
++                                     double(x1 - x0 + 1) / kGridW,
++                                     double(y1 - y0 + 1) / kGridH);
++            // 감마로 피사체 평균을 배경 쪽으로 끌어올림 (out = in^(1/g)), 노이즈 때문에 상한 1.8
++            const double target = std::min(lo * 0.85, lc + 60.0);
++            const double g = std::log(std::max(lc, 8.0) / 255.0) / std::log(target / 255.0);
++            out.exposureGamma = std::clamp(g, 1.0, 1.8);
++            out.exposureNeeded = out.exposureGamma >= 1.08;
++        }
++    }
++}
+diff --git a/src/news/newsanalyzer.h b/src/news/newsanalyzer.h
+new file mode 100644
+index 0000000..78d42a2
+--- /dev/null
++++ b/src/news/newsanalyzer.h
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (c) 2026 JTBC News
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef NEWSANALYZER_H
++#define NEWSANALYZER_H
++
++#include <QColor>
++#include <QRectF>
++#include <QString>
++#include <QVector>
++
++// 샷 하나의 자동 분석 결과. 분석은 모두 저해상도 프록시/모노 음성 파일로 한다.
++struct ShotAnalysis
++{
++    bool done = false;
++
++    // 싱크/스케치: 채널1 음성 구간
++    double voicedSeconds = 0.0;
++    double voicedRatio = 0.0;
++    double ch1RmsDb = -100.0;
++    bool isSync = false;
++
++    // 흔들림 컷 (프레임, 29.97 기준)
++    int trimHead = 0;
++    int trimTail = 0;
++
++    // 자동 화이트밸런스: 중성이어야 할 색(그레이월드 평균). valid=false면 보정 불필요
++    bool wbNeeded = false;
++    QColor wbNeutral = QColor(127, 127, 127);
++
++    // 인물 부분 노출: 화면 중앙 피사체가 배경보다 어두울 때만
++    bool exposureNeeded = false;
++    QRectF subjectRect; // 0~1 정규화 좌표
++    double exposureGamma = 1.0;
++    double subjectLuma = 0.0;
++    double backgroundLuma = 0.0;
++};
++
++class NewsAnalyzer
++{
++public:
++    static QString ffmpegPath();
++
++    // 채널1(모노 MXF)의 음성 구간으로 싱크 여부를 판단한다.
++    static void analyzeSpeech(const QString &ch1Path, double shotSeconds, ShotAnalysis &out);
++    // 프록시의 프레임 간 차이로 녹화 시작/끝 흔들림 구간을 찾는다. (4초 이상 스케치만)
++    static void analyzeShake(const QString &proxyPath, int shotFrames, ShotAnalysis &out);
++    // 프록시 몇 프레임을 샘플링해 화이트밸런스와 인물 노출을 분석한다.
++    static void analyzeColor(const QString &proxyPath, double shotSeconds, ShotAnalysis &out);
++
++    // 순수 계산 부분 (테스트하기 쉽게 분리)
++    // headMotion: 앞 2초의 프레임 간 차이, tailMotion: 끝 2초 (시간 순서 그대로)
++    static void computeTrim(const QVector<float> &headMotion,
++                            const QVector<float> &tailMotion,
++                            int shotFrames,
++                            int &head,
++                            int &tail);
++
++private:
++    static QByteArray run(const QStringList &args, int timeoutMs, bool stdoutOnly);
++};
++
++#endif // NEWSANALYZER_H
+diff --git a/src/news/newsdock.cpp b/src/news/newsdock.cpp
+new file mode 100644
+index 0000000..e338540
+--- /dev/null
++++ b/src/news/newsdock.cpp
+@@ -0,0 +1,897 @@
++/*
++ * Copyright (c) 2026 JTBC News
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "newsdock.h"
++
++#include "Logger.h"
++#include "docks/encodedock.h"
++#include "mainwindow.h"
++#include "settings.h"
++
++#include <QCheckBox>
++#include <QComboBox>
++#include <QDate>
++#include <QDateTime>
++#include <QDir>
++#include <QFile>
++#include <QFileDialog>
++#include <QFileInfo>
++#include <QGridLayout>
++#include <QHBoxLayout>
++#include <QHeaderView>
++#include <QIcon>
++#include <QLabel>
++#include <QLineEdit>
++#include <QMessageBox>
++#include <QPixmap>
++#include <QPointer>
++#include <QProgressBar>
++#include <QPushButton>
++#include <QRegularExpression>
++#include <QScrollArea>
++#include <QSettings>
++#include <QStandardPaths>
++#include <QThreadPool>
++#include <QTimer>
++#include <QTreeWidget>
++#include <QVBoxLayout>
++
++#include <algorithm>
++
++namespace {
++
++enum Column { ColName, ColTimecode, ColDuration, ColKind, ColTrim, ColFix, ColCount };
++
++constexpr int kAnalysisThreads = 3;
++const char *kPhrasesKey = "news/filenamePhrases";
++const char *kPhraseKey = "news/filenamePhrase";
++const char *kDateKey = "news/filenameDate";
++const char *kOutDirKey = "news/outputDir";
++const char *kCardKey = "news/contentsDir";
++
++QString formatDuration(double seconds)
++{
++    const int s = int(seconds + 0.5);
++    return QStringLiteral("%1:%2").arg(s / 60, 2, 10, QChar('0')).arg(s % 60, 2, 10, QChar('0'));
++}
++
++QString esc(const QString &s)
++{
++    return s.toHtmlEscaped();
++}
++
++// 패널 전용 스타일. Shotcut 기본 다크 테마 위에 방송 장비 느낌의 차분한 톤을 얹는다.
++const char *kStyle = R"(
++#NewsPanel { background: #15171c; }
++#NewsPanel QLabel { color: #d6d9e0; }
++QFrame#NewsCard { background: #1d2027; border: 1px solid #2a2e37; border-radius: 8px; }
++QLabel#NewsStep { color: #f5a524; font-weight: 700; font-size: 13px; letter-spacing: 1px; }
++QLabel#NewsTitle { color: #ffffff; font-size: 16px; font-weight: 700; }
++QLabel#NewsMuted { color: #8a91a0; }
++QLabel#NewsPreview { color: #ffffff; background: #101216; border: 1px solid #2a2e37;
++                     border-radius: 6px; padding: 6px 8px; font-family: Consolas, monospace; }
++#NewsPanel QPushButton { background: #2a2e37; color: #e6e8ee; border: 1px solid #353a45;
++                         border-radius: 6px; padding: 6px 12px; }
++#NewsPanel QPushButton:hover { background: #343944; }
++#NewsPanel QPushButton:disabled { color: #5c6270; background: #1f2229; }
++#NewsPanel QPushButton#NewsPrimary { background: #f5a524; color: #15171c; border: none;
++                                     font-weight: 700; padding: 8px 14px; }
++#NewsPanel QPushButton#NewsPrimary:hover { background: #ffb940; }
++#NewsPanel QPushButton#NewsPrimary:disabled { background: #5a4a26; color: #2a2414; }
++#NewsPanel QLineEdit, #NewsPanel QComboBox { background: #101216; color: #e6e8ee;
++                         border: 1px solid #2f3440; border-radius: 5px; padding: 4px 6px; }
++#NewsPanel QCheckBox { color: #d6d9e0; spacing: 6px; }
++#NewsPanel QTreeWidget { background: #101216; alternate-background-color: #14171c; color: #e6e8ee;
++                         border: 1px solid #2a2e37; border-radius: 6px; }
++#NewsPanel QTreeWidget::item { height: 30px; }
++#NewsPanel QTreeWidget::item:selected { background: #3a3220; color: #ffffff; }
++#NewsPanel QHeaderView::section { background: #1d2027; color: #8a91a0; border: none;
++                                  border-bottom: 1px solid #2a2e37; padding: 4px; }
++#NewsPanel QProgressBar { background: #101216; border: 1px solid #2a2e37; border-radius: 4px;
++                          height: 8px; text-align: center; color: transparent; }
++#NewsPanel QProgressBar::chunk { background: #f5a524; border-radius: 3px; }
++)";
++
++QFrame *makeCard(QWidget *parent, const QString &step, const QString &title, QVBoxLayout **body)
++{
++    auto card = new QFrame(parent);
++    card->setObjectName("NewsCard");
++    auto v = new QVBoxLayout(card);
++    v->setContentsMargins(12, 10, 12, 12);
++    v->setSpacing(8);
++    auto head = new QHBoxLayout;
++    auto stepLabel = new QLabel(step, card);
++    stepLabel->setObjectName("NewsStep");
++    auto titleLabel = new QLabel(title, card);
++    titleLabel->setObjectName("NewsTitle");
++    head->addWidget(stepLabel);
++    head->addWidget(titleLabel);
++    head->addStretch();
++    v->addLayout(head);
++    *body = v;
++    return card;
++}
++
++} // namespace
++
++NewsDock::NewsDock(QWidget *parent)
++    : QDockWidget(tr("뉴스 원본"), parent)
++{
++    setObjectName("NewsDock");
++    auto panel = new QWidget(this);
++    panel->setObjectName("NewsPanel");
++    panel->setStyleSheet(kStyle);
++    auto layout = new QVBoxLayout(panel);
++    layout->setContentsMargins(10, 10, 10, 10);
++    layout->setSpacing(10);
++    layout->addWidget(buildCardSection());
++    layout->addWidget(buildShotSection(), 1);
++    layout->addWidget(buildExportSection());
++
++    auto scroll = new QScrollArea(this);
++    scroll->setWidgetResizable(true);
++    scroll->setFrameShape(QFrame::NoFrame);
++    scroll->setWidget(panel);
++    setWidget(scroll);
++    setMinimumWidth(460);
++
++    loadPhrases();
++    updateFileNamePreview();
++
++    // 자동 검증 모드: NEWS_SELFTEST=<CONTENTS 경로>, NEWS_SELFTEST_LIMIT=<샷 수>, NEWS_SELFTEST_EXPORT=<출력 파일>
++    const QString selftest = qEnvironmentVariable("NEWS_SELFTEST");
++    if (!selftest.isEmpty()) {
++        QTimer::singleShot(4000, this, [this, selftest]() {
++            show();
++            raise();
++            if (!loadCard(selftest)) {
++                LOG_ERROR() << "news selftest: load failed";
++                return;
++            }
++            const int limit = qEnvironmentVariableIntValue("NEWS_SELFTEST_LIMIT");
++            const QStringList only = qEnvironmentVariable("NEWS_SELFTEST_ONLY").split(",", Qt::SkipEmptyParts);
++            for (int i = 0; i < m_card.shots().size(); i++) {
++                const bool keep = only.isEmpty() ? (limit <= 0 || i < limit) : only.contains(m_card.shots()[i].name());
++                m_tree->topLevelItem(i)->setCheckState(ColName, keep ? Qt::Checked : Qt::Unchecked);
++                if (keep) {
++                    m_analysis[i] = computeShot(i);
++                    refreshRow(i);
++                    const auto &a = m_analysis[i];
++                    LOG_INFO() << "news selftest shot" << m_card.shots()[i].label() << "sync" << a.isSync
++                               << "voiced" << a.voicedSeconds << "trim" << a.trimHead << a.trimTail << "wb"
++                               << a.wbNeeded << a.wbNeutral.name() << "exposure" << a.exposureNeeded
++                               << a.exposureGamma << a.subjectRect;
++                }
++            }
++            const QString project = buildProjectFile();
++            LOG_INFO() << "news selftest project" << project;
++            if (project.isEmpty() || !MAIN.open(project))
++                return;
++            const QString target = qEnvironmentVariable("NEWS_SELFTEST_EXPORT");
++            if (!target.isEmpty()) {
++                QTimer::singleShot(3000, this, [target]() {
++                    LOG_INFO() << "news selftest export" << target
++                               << MAIN.encodeDock()->exportNewsXdcam(target);
++                });
++            }
++        });
++    }
++}
++
++NewsDock::~NewsDock()
++{
++    QThreadPool::globalInstance()->waitForDone(3000);
++}
++
++QWidget *NewsDock::buildCardSection()
++{
++    QVBoxLayout *body;
++    auto card = makeCard(this, "01", tr("P2 카드"), &body);
++    auto row = new QHBoxLayout;
++    m_pathEdit = new QLineEdit(card);
++    QSettings s;
++    m_pathEdit->setText(s.value(kCardKey, P2Card::defaultContentsDir()).toString());
++    m_pathEdit->setPlaceholderText(tr("P2 카드의 CONTENTS 폴더"));
++    auto browse = new QPushButton(tr("찾기"), card);
++    m_loadButton = new QPushButton(tr("불러오기"), card);
++    m_loadButton->setObjectName("NewsPrimary");
++    row->addWidget(m_pathEdit, 1);
++    row->addWidget(browse);
++    row->addWidget(m_loadButton);
++    body->addLayout(row);
++    m_cardInfo = new QLabel(tr("카드를 꽂고 불러오기를 누르세요. 영상·음성 4채널·연결 클립을 하나로 묶습니다."),
++                            card);
++    m_cardInfo->setObjectName("NewsMuted");
++    m_cardInfo->setWordWrap(true);
++    body->addWidget(m_cardInfo);
++    connect(browse, &QPushButton::clicked, this, &NewsDock::onBrowse);
++    connect(m_loadButton, &QPushButton::clicked, this, &NewsDock::onLoad);
++    return card;
++}
++
++QWidget *NewsDock::buildShotSection()
++{
++    QVBoxLayout *body;
++    auto card = makeCard(this, "02", tr("자동 분석 · 정렬"), &body);
++
++    m_tree = new QTreeWidget(card);
++    m_tree->setColumnCount(ColCount);
++    m_tree->setHeaderLabels({tr("클립"), tr("TC"), tr("길이"), tr("분류"), tr("흔들림 컷"), tr("보정")});
++    m_tree->setRootIsDecorated(false);
++    m_tree->setAlternatingRowColors(true);
++    m_tree->setIconSize(QSize(48, 27));
++    m_tree->setUniformRowHeights(true);
++    m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
++    m_tree->header()->setStretchLastSection(true);
++    m_tree->setColumnWidth(ColName, 130);
++    m_tree->setColumnWidth(ColTimecode, 82);
++    m_tree->setColumnWidth(ColDuration, 50);
++    m_tree->setColumnWidth(ColKind, 60);
++    m_tree->setColumnWidth(ColTrim, 80);
++    m_tree->setMinimumHeight(260);
++    m_tree->setToolTip(tr("더블클릭: 미리보기 · 분류 칸 클릭: 싱크/스케치 바꾸기 · 체크 해제: 타임라인에서 제외"));
++    body->addWidget(m_tree, 1);
++
++    auto opts = new QGridLayout;
++    m_shakeCheck = new QCheckBox(tr("스케치 앞뒤 흔들림 자동 컷 (4초 이상)"), card);
++    m_wbCheck = new QCheckBox(tr("자동 화이트밸런스"), card);
++    m_exposureCheck = new QCheckBox(tr("역광 인물 노출 자동 보정"), card);
++    m_noiseCheck = new QCheckBox(tr("싱크 음성 노이즈 제거"), card);
++    for (auto c : {m_shakeCheck, m_wbCheck, m_exposureCheck, m_noiseCheck})
++        c->setChecked(true);
++    opts->addWidget(m_shakeCheck, 0, 0);
++    opts->addWidget(m_wbCheck, 0, 1);
++    opts->addWidget(m_exposureCheck, 1, 0);
++    opts->addWidget(m_noiseCheck, 1, 1);
++    body->addLayout(opts);
++
++    m_progress = new QProgressBar(card);
++    m_progress->setVisible(false);
++    m_progress->setMaximumHeight(8);
++    body->addWidget(m_progress);
++    m_status = new QLabel(card);
++    m_status->setObjectName("NewsMuted");
++    m_status->setWordWrap(true);
++    body->addWidget(m_status);
++
++    auto buttons = new QHBoxLayout;
++    m_analyzeButton = new QPushButton(tr("자동 분석"), card);
++    m_arrangeButton = new QPushButton(tr("타임라인에 자동 정렬"), card);
++    m_arrangeButton->setObjectName("NewsPrimary");
++    m_analyzeButton->setEnabled(false);
++    m_arrangeButton->setEnabled(false);
++    buttons->addWidget(m_analyzeButton);
++    buttons->addStretch();
++    buttons->addWidget(m_arrangeButton);
++    body->addLayout(buttons);
++
++    connect(m_analyzeButton, &QPushButton::clicked, this, &NewsDock::onAnalyze);
++    connect(m_arrangeButton, &QPushButton::clicked, this, &NewsDock::onArrange);
++    connect(m_tree, &QTreeWidget::itemDoubleClicked, this, &NewsDock::onItemDoubleClicked);
++    connect(m_tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int column) {
++        if (column != ColKind || m_busy)
++            return;
++        const int i = item->data(ColName, Qt::UserRole).toInt();
++        m_classification[i] = isSync(i) ? 0 : 1;
++        refreshRow(i);
++    });
++    return card;
++}
++
++QWidget *NewsDock::buildExportSection()
++{
++    QVBoxLayout *body;
++    auto card = makeCard(this, "03", tr("파일명 · MPEG-2 출력"), &body);
++    QSettings s;
++
++    auto phraseRow = new QHBoxLayout;
++    m_dateCheck = new QCheckBox(tr("오늘 날짜"), card);
++    m_dateCheck->setChecked(s.value(kDateKey, true).toBool());
++    m_phraseCombo = new QComboBox(card);
++    m_phraseCombo->setEditable(true);
++    m_phraseCombo->setInsertPolicy(QComboBox::NoInsert);
++    m_phraseCombo->setMinimumWidth(170);
++    auto save = new QPushButton(tr("문구 저장"), card);
++    auto remove = new QPushButton(tr("삭제"), card);
++    phraseRow->addWidget(m_dateCheck);
++    phraseRow->addWidget(m_phraseCombo, 1);
++    phraseRow->addWidget(save);
++    phraseRow->addWidget(remove);
++    body->addLayout(phraseRow);
++
++    m_titleEdit = new QLineEdit(card);
++    m_titleEdit->setPlaceholderText(tr("내용 (예: 방통위 브리핑)"));
++    body->addWidget(m_titleEdit);
++
++    auto dirRow = new QHBoxLayout;
++    m_outDirEdit = new QLineEdit(card);
++    m_outDirEdit->setText(
++        s.value(kOutDirKey, QStandardPaths::writableLocation(QStandardPaths::DesktopLocation))
++            .toString());
++    auto dirButton = new QPushButton(tr("폴더"), card);
++    dirRow->addWidget(new QLabel(tr("저장 위치"), card));
++    dirRow->addWidget(m_outDirEdit, 1);
++    dirRow->addWidget(dirButton);
++    body->addLayout(dirRow);
++
++    m_namePreview = new QLabel(card);
++    m_namePreview->setObjectName("NewsPreview");
++    m_namePreview->setTextInteractionFlags(Qt::TextSelectableByMouse);
++    body->addWidget(m_namePreview);
++
++    auto spec = new QLabel(tr("XDCAM HD422 · MPEG-2 50Mbps · MXF · 1080i 29.97 · PCM 16bit 2ch (EDIUS JTBC 프리셋과 동일)"),
++                           card);
++    spec->setObjectName("NewsMuted");
++    spec->setWordWrap(true);
++    body->addWidget(spec);
++
++    m_exportButton = new QPushButton(tr("타임라인 MPEG-2 출력"), card);
++    m_exportButton->setObjectName("NewsPrimary");
++    body->addWidget(m_exportButton);
++
++    connect(save, &QPushButton::clicked, this, &NewsDock::onSavePhrase);
++    connect(remove, &QPushButton::clicked, this, &NewsDock::onRemovePhrase);
++    connect(m_dateCheck, &QCheckBox::toggled, this, &NewsDock::updateFileNamePreview);
++    connect(m_phraseCombo, &QComboBox::currentTextChanged, this, &NewsDock::updateFileNamePreview);
++    connect(m_titleEdit, &QLineEdit::textChanged, this, &NewsDock::updateFileNamePreview);
++    connect(m_outDirEdit, &QLineEdit::textChanged, this, &NewsDock::updateFileNamePreview);
++    connect(dirButton, &QPushButton::clicked, this, [this]() {
++        const QString dir = QFileDialog::getExistingDirectory(this, tr("저장 위치"), m_outDirEdit->text());
++        if (!dir.isEmpty())
++            m_outDirEdit->setText(QDir::toNativeSeparators(dir));
++    });
++    connect(m_exportButton, &QPushButton::clicked, this, &NewsDock::onExport);
++    return card;
++}
++
++// ---------------------------------------------------------------- 파일명
++
++void NewsDock::loadPhrases()
++{
++    QSettings s;
++    QStringList phrases = s.value(kPhrasesKey).toStringList();
++    if (phrases.isEmpty())
++        phrases << QStringLiteral("[정제본_영상취재]");
++    m_phraseCombo->clear();
++    m_phraseCombo->addItems(phrases);
++    const QString last = s.value(kPhraseKey, phrases.first()).toString();
++    m_phraseCombo->setCurrentText(last);
++}
++
++void NewsDock::savePhrases()
++{
++    QStringList phrases;
++    for (int i = 0; i < m_phraseCombo->count(); i++)
++        phrases << m_phraseCombo->itemText(i);
++    QSettings s;
++    s.setValue(kPhrasesKey, phrases);
++}
++
++void NewsDock::onSavePhrase()
++{
++    const QString text = m_phraseCombo->currentText().trimmed();
++    if (text.isEmpty())
++        return;
++    if (m_phraseCombo->findText(text) < 0)
++        m_phraseCombo->insertItem(0, text);
++    m_phraseCombo->setCurrentText(text);
++    savePhrases();
++}
++
++void NewsDock::onRemovePhrase()
++{
++    const int i = m_phraseCombo->findText(m_phraseCombo->currentText());
++    if (i >= 0)
++        m_phraseCombo->removeItem(i);
++    savePhrases();
++}
++
++QString NewsDock::outputBaseName() const
++{
++    QStringList parts;
++    if (m_dateCheck->isChecked())
++        parts << QDate::currentDate().toString("yyyyMMdd");
++    const QString phrase = m_phraseCombo->currentText().trimmed();
++    if (!phrase.isEmpty())
++        parts << phrase;
++    const QString title = m_titleEdit->text().trimmed();
++    if (!title.isEmpty())
++        parts << title;
++    QString name = parts.join(' ');
++    // Windows 파일명에 쓸 수 없는 문자 제거
++    static const QString bad = QStringLiteral("\\/:*?\"<>|");
++    for (const auto &c : bad)
++        name.remove(c);
++    return name.isEmpty() ? QStringLiteral("출력") : name;
++}
++
++void NewsDock::updateFileNamePreview()
++{
++    m_namePreview->setText(outputBaseName() + ".mxf");
++    QSettings s;
++    s.setValue(kDateKey, m_dateCheck->isChecked());
++    s.setValue(kPhraseKey, m_phraseCombo->currentText());
++    s.setValue(kOutDirKey, m_outDirEdit->text());
++}
++
++// ---------------------------------------------------------------- P2 불러오기
++
++void NewsDock::onBrowse()
++{
++    const QString dir = QFileDialog::getExistingDirectory(this,
++                                                          tr("P2 카드의 CONTENTS 폴더 선택"),
++                                                          m_pathEdit->text());
++    if (!dir.isEmpty()) {
++        m_pathEdit->setText(QDir::toNativeSeparators(dir));
++        onLoad();
++    }
++}
++
++bool NewsDock::loadCard(const QString &contentsDir)
++{
++    QString error;
++    if (!m_card.load(contentsDir, &error)) {
++        m_cardInfo->setText(error);
++        return false;
++    }
++    QSettings().setValue(kCardKey, contentsDir);
++    m_analysis = QVector<ShotAnalysis>(m_card.shots().size());
++    m_classification = QVector<int>(m_card.shots().size(), -1);
++    int spanned = 0;
++    double total = 0;
++    for (const auto &shot : m_card.shots()) {
++        total += shot.seconds();
++        if (shot.parts.size() > 1)
++            spanned++;
++    }
++    const auto &first = m_card.shots().first();
++    m_cardInfo->setText(tr("%1 · %2 · 샷 %3개 (연결 클립 %4개 합침) · 총 %5")
++                            .arg(first.model, first.codec)
++                            .arg(m_card.shots().size())
++                            .arg(spanned)
++                            .arg(formatDuration(total)));
++    populateShots();
++    m_analyzeButton->setEnabled(true);
++    m_arrangeButton->setEnabled(true);
++    m_status->setText(tr("자동 분석을 누르면 싱크/스케치 분류와 흔들림·색·노출을 분석합니다."));
++    return true;
++}
++
++void NewsDock::onLoad()
++{
++    if (m_busy)
++        return;
++    loadCard(m_pathEdit->text());
++}
++
++void NewsDock::populateShots()
++{
++    m_tree->clear();
++    const auto &shots = m_card.shots();
++    for (int i = 0; i < shots.size(); i++) {
++        auto item = new QTreeWidgetItem(m_tree);
++        item->setData(ColName, Qt::UserRole, i);
++        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
++        item->setCheckState(ColName, Qt::Checked);
++        QPixmap icon(m_card.iconPath(shots[i].name()));
++        if (!icon.isNull())
++            item->setIcon(ColName, QIcon(icon.scaled(48, 27, Qt::KeepAspectRatioByExpanding,
++                                                     Qt::SmoothTransformation)));
++        item->setText(ColName, shots[i].label());
++        item->setText(ColTimecode, shots[i].startTimecode);
++        item->setText(ColDuration, formatDuration(shots[i].seconds()));
++        if (shots[i].continuesOnOtherCard)
++            item->setToolTip(ColName, tr("다음 조각이 다른 카드에 있습니다."));
++        refreshRow(i);
++    }
++}
++
++bool NewsDock::isSync(int index) const
++{
++    if (m_classification[index] >= 0)
++        return m_classification[index] == 1;
++    return m_analysis[index].isSync;
++}
++
++void NewsDock::refreshRow(int index)
++{
++    auto item = m_tree->topLevelItem(index);
++    if (!item)
++        return;
++    const auto &a = m_analysis[index];
++    const bool known = a.done || m_classification[index] >= 0;
++    if (!known) {
++        item->setText(ColKind, QStringLiteral("—"));
++        item->setForeground(ColKind, QColor("#5c6270"));
++    } else if (isSync(index)) {
++        item->setText(ColKind, tr("싱크"));
++        item->setForeground(ColKind, QColor("#4fb4ff"));
++    } else {
++        item->setText(ColKind, tr("스케치"));
++        item->setForeground(ColKind, QColor("#a7aebb"));
++    }
++    if (a.done) {
++        item->setText(ColTrim,
++                      (a.trimHead || a.trimTail)
++                          ? QStringLiteral("%1 / %2").arg(a.trimHead).arg(a.trimTail)
++                          : QStringLiteral("—"));
++        item->setToolTip(ColTrim, tr("앞/뒤에서 자를 프레임 수"));
++        QStringList fixes;
++        if (a.wbNeeded)
++            fixes << tr("WB");
++        if (a.exposureNeeded)
++            fixes << tr("노출");
++        if (isSync(index))
++            fixes << tr("NR");
++        item->setText(ColFix, fixes.isEmpty() ? QStringLiteral("—") : fixes.join(" · "));
++        item->setToolTip(ColKind,
++                         tr("채널1 음성 %1초 (%2%), 레벨 %3 dB")
++                             .arg(a.voicedSeconds, 0, 'f', 1)
++                             .arg(int(a.voicedRatio * 100))
++                             .arg(a.ch1RmsDb, 0, 'f', 1));
++        QString fixTip;
++        if (a.wbNeeded)
++            fixTip += tr("화이트밸런스 중성색 %1\n").arg(a.wbNeutral.name());
++        if (a.exposureNeeded)
++            fixTip += tr("인물 영역 밝기 %1 → 배경 %2, 감마 %3")
++                          .arg(int(a.subjectLuma))
++                          .arg(int(a.backgroundLuma))
++                          .arg(a.exposureGamma, 0, 'f', 2);
++        item->setToolTip(ColFix, fixTip.trimmed());
++    }
++}
++
++void NewsDock::onItemDoubleClicked(QTreeWidgetItem *item, int column)
++{
++    if (column == ColKind)
++        return;
++    const int i = item->data(ColName, Qt::UserRole).toInt();
++    const QString path = shotMltPath(i);
++    if (!path.isEmpty())
++        MAIN.open(path);
++}
++
++QString NewsDock::workDir() const
++{
++    QString card = QDir(m_card.contentsDir()).absolutePath();
++    card.replace(QRegularExpression("[^A-Za-z0-9]+"), "_");
++    return QDir(Settings.appDataLocation()).absoluteFilePath("news-p2/" + card);
++}
++
++QString NewsDock::shotMltPath(int index)
++{
++    return m_card.writeShotMlt(m_card.shots().at(index), workDir());
++}
++
++// ---------------------------------------------------------------- 자동 분석
++
++void NewsDock::setBusy(bool busy, const QString &message)
++{
++    m_busy = busy;
++    m_loadButton->setEnabled(!busy);
++    m_analyzeButton->setEnabled(!busy && !m_card.shots().isEmpty());
++    m_arrangeButton->setEnabled(!busy && !m_card.shots().isEmpty());
++    m_exportButton->setEnabled(!busy);
++    m_progress->setVisible(busy);
++    if (!message.isEmpty())
++        m_status->setText(message);
++}
++
++ShotAnalysis NewsDock::computeShot(int index) const
++{
++    const auto &shot = m_card.shots().at(index);
++    ShotAnalysis a;
++    // 음성: 연결 클립이면 첫 조각의 채널1로 판단
++    NewsAnalyzer::analyzeSpeech(m_card.audioPath(shot.name(), 0), shot.parts.first().frames * 1001.0 / 30000.0, a);
++    // 흔들림·색: 프록시 (640x360)로 분석. 연결 클립은 앞 조각의 앞부분, 끝 조각의 끝부분
++    if (shot.parts.size() == 1) {
++        NewsAnalyzer::analyzeShake(m_card.proxyPath(shot.name()), shot.frames(), a);
++    } else {
++        ShotAnalysis headOnly, tailOnly;
++        NewsAnalyzer::analyzeShake(m_card.proxyPath(shot.parts.first().name), shot.frames(), headOnly);
++        NewsAnalyzer::analyzeShake(m_card.proxyPath(shot.parts.last().name), shot.frames(), tailOnly);
++        a.trimHead = headOnly.trimHead;
++        a.trimTail = tailOnly.trimTail;
++    }
++    NewsAnalyzer::analyzeColor(m_card.proxyPath(shot.name()), shot.parts.first().frames * 1001.0 / 30000.0, a);
++    a.done = true;
++    return a;
++}
++
++void NewsDock::onAnalyze()
++{
++    if (m_busy || m_card.shots().isEmpty())
++        return;
++    const int n = m_card.shots().size();
++    setBusy(true, tr("분석 중… 프록시와 채널1 음성으로 분석하므로 원본보다 훨씬 빠릅니다."));
++    m_progress->setRange(0, n);
++    m_progress->setValue(0);
++    m_pending.storeRelease(n);
++    auto pool = QThreadPool::globalInstance();
++    pool->setMaxThreadCount(std::max(pool->maxThreadCount(), kAnalysisThreads));
++    QPointer<NewsDock> self(this);
++    // 결과는 미리 잡아둔 칸에 직접 쓴다 (작업 중 m_analysis 크기는 바뀌지 않음)
++    ShotAnalysis *results = m_analysis.data();
++    for (int i = 0; i < n; i++) {
++        pool->start([self, results, i]() {
++            if (!self)
++                return;
++            results[i] = self->computeShot(i);
++            QMetaObject::invokeMethod(self, "onShotAnalyzed", Qt::QueuedConnection, Q_ARG(int, i));
++        });
++    }
++}
++
++void NewsDock::analyzeAllBlocking()
++{
++    for (int i = 0; i < m_card.shots().size(); i++) {
++        m_analysis[i] = computeShot(i);
++        refreshRow(i);
++    }
++}
++
++void NewsDock::onShotAnalyzed(int index)
++{
++    refreshRow(index);
++    m_progress->setValue(m_progress->value() + 1);
++    if (m_pending.fetchAndAddOrdered(-1) == 1) {
++        int sync = 0, trimmed = 0, wb = 0, exposure = 0;
++        for (int i = 0; i < m_analysis.size(); i++) {
++            sync += isSync(i);
++            trimmed += (m_analysis[i].trimHead || m_analysis[i].trimTail) && !isSync(i);
++            wb += m_analysis[i].wbNeeded;
++            exposure += m_analysis[i].exposureNeeded;
++        }
++        setBusy(false,
++                tr("분석 완료 · 싱크 %1 · 스케치 %2 · 흔들림 컷 %3 · WB %4 · 역광 인물 %5. "
++                   "분류가 틀리면 분류 칸을 클릭해 바꾸세요.")
++                    .arg(sync)
++                    .arg(m_analysis.size() - sync)
++                    .arg(trimmed)
++                    .arg(wb)
++                    .arg(exposure));
++    }
++}
++
++// ---------------------------------------------------------------- 타임라인 정렬
++
++QString NewsDock::clipFiltersXml(int index) const
++{
++    const auto &a = m_analysis[index];
++    QString x;
++    if (!a.done)
++        return x;
++    if (m_wbCheck->isChecked() && a.wbNeeded) {
++        x += "    <filter mlt_service=\"frei0r.colgate\">\n";
++        x += QStringLiteral("      <property name=\"0\">%1</property>\n").arg(a.wbNeutral.name());
++        x += "      <property name=\"1\">0.433333</property>\n"; // 6500K
++        x += "      <property name=\"threads\">0</property>\n";
++        x += "      <property name=\"news:auto\">wb</property>\n";
++        x += "    </filter>\n";
++    }
++    if (m_exposureCheck->isChecked() && a.exposureNeeded) {
++        // 마스크(타원, 부드러운 경계) 안에서만 감마를 올린다 → 배경 노출 유지
++        const QRectF r = a.subjectRect;
++        x += "    <filter mlt_service=\"mask_start\">\n";
++        x += "      <property name=\"shotcut:filter\">maskSimpleShape</property>\n";
++        x += "      <property name=\"filter\">frei0r.alphaspot</property>\n";
++        x += "      <property name=\"filter.0\">0.333333</property>\n"; // 타원
++        x += QStringLiteral("      <property name=\"filter.1\">%1</property>\n").arg(r.center().x(), 0, 'f', 4);
++        x += QStringLiteral("      <property name=\"filter.2\">%1</property>\n").arg(r.center().y(), 0, 'f', 4);
++        x += QStringLiteral("      <property name=\"filter.3\">%1</property>\n").arg(r.width() / 2, 0, 'f', 4);
++        x += QStringLiteral("      <property name=\"filter.4\">%1</property>\n").arg(r.height() / 2, 0, 'f', 4);
++        x += "      <property name=\"filter.5\">0.5</property>\n";
++        x += "      <property name=\"filter.6\">0.45</property>\n"; // 경계 부드럽게
++        x += "      <property name=\"filter.9\">0</property>\n";
++        x += QStringLiteral("      <property name=\"shotcut:rect\">%1%/%2%:%3%x%4%</property>\n")
++                 .arg(r.x() * 100, 0, 'f', 2)
++                 .arg(r.y() * 100, 0, 'f', 2)
++                 .arg(r.width() * 100, 0, 'f', 2)
++                 .arg(r.height() * 100, 0, 'f', 2);
++        x += "      <property name=\"news:auto\">exposure</property>\n";
++        x += "    </filter>\n";
++        x += "    <filter mlt_service=\"lift_gamma_gain\">\n";
++        for (const QString c : {QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}) {
++            x += QStringLiteral("      <property name=\"lift_%1\">0</property>\n").arg(c);
++            x += QStringLiteral("      <property name=\"gamma_%1\">%2</property>\n").arg(c).arg(a.exposureGamma, 0, 'f', 3);
++            x += QStringLiteral("      <property name=\"gain_%1\">1</property>\n").arg(c);
++        }
++        x += "      <property name=\"shotcut:filter_version\">1</property>\n";
++        x += "      <property name=\"news:auto\">exposure</property>\n";
++        x += "    </filter>\n";
++        x += "    <filter mlt_service=\"mask_apply\">\n";
++        x += "      <property name=\"transition\">qtblend</property>\n";
++        x += "      <property name=\"transition.threads\">0</property>\n";
++        x += "      <property name=\"news:auto\">exposure</property>\n";
++        x += "    </filter>\n";
++    }
++    if (m_noiseCheck->isChecked() && isSync(index)) {
++        x += "    <filter mlt_service=\"rnnoise\">\n";
++        x += "      <property name=\"mix\">1</property>\n";
++        x += "      <property name=\"news:auto\">noise</property>\n";
++        x += "    </filter>\n";
++    }
++    return x;
++}
++
++QString NewsDock::buildProjectFile()
++{
++    const auto &shots = m_card.shots();
++    QList<int> syncList, sketchList;
++    for (int i = 0; i < shots.size(); i++) {
++        auto item = m_tree->topLevelItem(i);
++        if (item && item->checkState(ColName) != Qt::Checked)
++            continue;
++        (isSync(i) ? syncList : sketchList) << i;
++    }
++    if (syncList.isEmpty() && sketchList.isEmpty())
++        return QString();
++
++    // 클립 in/out (스케치 4초 이상만 흔들림 컷)
++    auto clipRange = [&](int i, int &in, int &out) {
++        const int frames = shots[i].frames();
++        in = 0;
++        out = frames - 1;
++        if (m_shakeCheck->isChecked() && !isSync(i) && m_analysis[i].done) {
++            in = m_analysis[i].trimHead;
++            out = frames - 1 - m_analysis[i].trimTail;
++        }
++    };
++    int syncLen = 0, sketchLen = 0;
++    for (int i : syncList) {
++        int in, out;
++        clipRange(i, in, out);
++        syncLen += out - in + 1;
++    }
++    for (int i : sketchList) {
++        int in, out;
++        clipRange(i, in, out);
++        sketchLen += out - in + 1;
++    }
++    const int total = syncLen + sketchLen;
++
++    QString x;
++    x += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
++    x += "<mlt LC_NUMERIC=\"C\" version=\"7.40.0\" title=\"뉴스 원본 편집기\" producer=\"main_bin\">\n";
++    x += "  <profile description=\"HD 1080i 29.97 fps\" width=\"1920\" height=\"1080\" progressive=\"0\" "
++         "sample_aspect_num=\"1\" sample_aspect_den=\"1\" display_aspect_num=\"16\" display_aspect_den=\"9\" "
++         "frame_rate_num=\"30000\" frame_rate_den=\"1001\" colorspace=\"709\"/>\n";
++    x += "  <playlist id=\"main_bin\">\n    <property name=\"xml_retain\">1</property>\n";
++    x += "  </playlist>\n";
++    x += QStringLiteral("  <producer id=\"black\" in=\"0\" out=\"%1\">\n").arg(total - 1);
++    x += QStringLiteral("    <property name=\"length\">%1</property>\n").arg(total);
++    x += "    <property name=\"eof\">pause</property>\n";
++    x += "    <property name=\"resource\">0</property>\n";
++    x += "    <property name=\"aspect_ratio\">1</property>\n";
++    x += "    <property name=\"mlt_service\">color</property>\n";
++    x += "    <property name=\"mlt_image_format\">rgba</property>\n";
++    x += "    <property name=\"set.test_audio\">0</property>\n";
++    x += "  </producer>\n";
++    x += QStringLiteral("  <playlist id=\"background\">\n    <entry producer=\"black\" in=\"0\" out=\"%1\"/>\n  </playlist>\n")
++             .arg(total - 1);
++
++    // V1 = 싱크 (0부터), V2 = 스케치 (싱크가 끝난 뒤부터) → 재생하면 싱크 → 스케치 순으로 다 보인다.
++    auto writeTrack = [&](const QString &id, const QString &name, const QList<int> &list, int startBlank) {
++        QString entries;
++        if (startBlank > 0)
++            entries += QStringLiteral("    <blank length=\"%1\"/>\n").arg(startBlank);
++        for (int i : list) {
++            const auto &shot = shots[i];
++            const QString pid = QStringLiteral("clip_%1").arg(shot.name());
++            int in, out;
++            clipRange(i, in, out);
++            x += QStringLiteral("  <producer id=\"%1\" in=\"0\" out=\"%2\">\n").arg(pid).arg(shot.frames() - 1);
++            x += QStringLiteral("    <property name=\"length\">%1</property>\n").arg(shot.frames());
++            x += QStringLiteral("    <property name=\"resource\">%1</property>\n")
++                     .arg(esc(QDir::fromNativeSeparators(shotMltPath(i))));
++            x += "    <property name=\"mlt_service\">xml</property>\n";
++            x += QStringLiteral("    <property name=\"shotcut:caption\">%1 %2</property>\n")
++                     .arg(isSync(i) ? tr("싱크") : tr("스케치"), shot.label());
++            x += clipFiltersXml(i);
++            x += "  </producer>\n";
++            entries += QStringLiteral("    <entry producer=\"%1\" in=\"%2\" out=\"%3\"/>\n").arg(pid).arg(in).arg(out);
++        }
++        x += QStringLiteral("  <playlist id=\"%1\">\n").arg(id);
++        x += "    <property name=\"shotcut:video\">1</property>\n";
++        x += QStringLiteral("    <property name=\"shotcut:name\">%1</property>\n").arg(name);
++        x += entries + "  </playlist>\n";
++    };
++    writeTrack("playlist0", tr("V1 싱크"), syncList, 0);
++    writeTrack("playlist1", tr("V2 스케치"), sketchList, syncLen);
++
++    x += QStringLiteral("  <tractor id=\"tractor0\" title=\"뉴스 원본 편집기\" in=\"0\" out=\"%1\">\n").arg(total - 1);
++    x += "    <property name=\"shotcut\">1</property>\n";
++    x += "    <property name=\"shotcut:projectAudioChannels\">2</property>\n";
++    x += "    <track producer=\"background\"/>\n";
++    x += "    <track producer=\"playlist0\"/>\n";
++    x += "    <track producer=\"playlist1\"/>\n";
++    for (int b : {1, 2}) {
++        x += "    <transition mlt_service=\"mix\">\n";
++        x += "      <property name=\"a_track\">0</property>\n";
++        x += QStringLiteral("      <property name=\"b_track\">%1</property>\n").arg(b);
++        x += "      <property name=\"always_active\">1</property>\n";
++        x += "      <property name=\"sum\">1</property>\n";
++        x += "    </transition>\n";
++    }
++    x += "    <transition mlt_service=\"qtblend\">\n";
++    x += "      <property name=\"a_track\">1</property>\n";
++    x += "      <property name=\"b_track\">2</property>\n";
++    x += "      <property name=\"compositing\">0</property>\n";
++    x += "      <property name=\"distort\">0</property>\n";
++    x += "      <property name=\"threads\">0</property>\n";
++    x += "    </transition>\n";
++    x += "  </tractor>\n</mlt>\n";
++
++    const QString path = QDir(workDir()).absoluteFilePath(
++        QStringLiteral("타임라인_%1.mlt").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")));
++    QDir().mkpath(workDir());
++    QFile f(path);
++    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
++        return QString();
++    f.write(x.toUtf8());
++    return path;
++}
++
++void NewsDock::onArrange()
++{
++    if (m_busy || m_card.shots().isEmpty())
++        return;
++    bool analyzed = std::any_of(m_analysis.cbegin(), m_analysis.cend(), [](const ShotAnalysis &a) {
++        return a.done;
++    });
++    if (!analyzed) {
++        auto answer = QMessageBox::question(this,
++                                            tr("자동 분석"),
++                                            tr("아직 분석하지 않았습니다. 분석 없이 모두 스케치로 배치할까요?\n"
++                                               "(아니요를 누르면 먼저 자동 분석을 하세요)"));
++        if (answer != QMessageBox::Yes)
++            return;
++    }
++    const QString path = buildProjectFile();
++    if (path.isEmpty()) {
++        m_status->setText(tr("배치할 클립이 없습니다."));
++        return;
++    }
++    LOG_INFO() << "news project" << path;
++    if (MAIN.open(path))
++        m_status->setText(tr("타임라인 구성 완료: V1 싱크 → V2 스케치 순서로 이어집니다. 자동 보정은 필터 패널에서 켜고 끌 수 있습니다."));
++}
++
++// ---------------------------------------------------------------- 출력
++
++void NewsDock::onExport()
++{
++    if (!MAIN.isMultitrackValid()) {
++        QMessageBox::information(this, tr("출력"), tr("먼저 타임라인을 구성하세요."));
++        return;
++    }
++    QDir dir(m_outDirEdit->text());
++    if (!dir.exists() && !QDir().mkpath(dir.absolutePath())) {
++        QMessageBox::warning(this, tr("출력"), tr("저장 위치를 만들 수 없습니다."));
++        return;
++    }
++    QString target = dir.absoluteFilePath(outputBaseName() + ".mxf");
++    if (QFileInfo::exists(target)) {
++        auto answer = QMessageBox::question(this, tr("출력"), tr("같은 이름의 파일이 있습니다. 덮어쓸까요?\n%1").arg(target));
++        if (answer != QMessageBox::Yes)
++            return;
++    }
++    if (MAIN.encodeDock()->exportNewsXdcam(target))
++        m_status->setText(tr("출력 시작: %1 (작업 패널에서 진행률 확인)").arg(QDir::toNativeSeparators(target)));
++    else
++        QMessageBox::warning(this, tr("출력"), tr("출력을 시작하지 못했습니다."));
++}
+diff --git a/src/news/newsdock.h b/src/news/newsdock.h
+new file mode 100644
+index 0000000..f9be5e5
+--- /dev/null
++++ b/src/news/newsdock.h
+@@ -0,0 +1,109 @@
++/*
++ * Copyright (c) 2026 JTBC News
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef NEWSDOCK_H
++#define NEWSDOCK_H
++
++#include "news/newsanalyzer.h"
++#include "news/p2card.h"
++
++#include <QAtomicInt>
++#include <QDockWidget>
++#include <QVector>
++
++class QCheckBox;
++class QComboBox;
++class QLabel;
++class QLineEdit;
++class QProgressBar;
++class QPushButton;
++class QTreeWidget;
++class QTreeWidgetItem;
++
++// 뉴스 원본 편집 패널: P2 불러오기 → 자동 분석 → 타임라인 정렬 → JTBC 규격 출력
++class NewsDock : public QDockWidget
++{
++    Q_OBJECT
++
++public:
++    explicit NewsDock(QWidget *parent = nullptr);
++    ~NewsDock();
++
++    // 출력 파일명 (날짜 접두어 + 저장한 문구), 확장자 제외
++    QString outputBaseName() const;
++
++    // 자동 테스트/명령줄용
++    bool loadCard(const QString &contentsDir);
++    QString buildProjectFile();
++    void analyzeAllBlocking();
++
++private slots:
++    void onBrowse();
++    void onLoad();
++    void onAnalyze();
++    void onArrange();
++    void onExport();
++    void onItemDoubleClicked(QTreeWidgetItem *item, int column);
++    void onSavePhrase();
++    void onRemovePhrase();
++    void updateFileNamePreview();
++    void onShotAnalyzed(int index);
++
++private:
++    QWidget *buildCardSection();
++    QWidget *buildShotSection();
++    QWidget *buildExportSection();
++    void populateShots();
++    void refreshRow(int index);
++    void setBusy(bool busy, const QString &message = QString());
++    void loadPhrases();
++    void savePhrases();
++    QString workDir() const;
++    QString shotMltPath(int index);
++    QString clipFiltersXml(int index) const;
++    ShotAnalysis computeShot(int index) const;
++
++    P2Card m_card;
++    QVector<ShotAnalysis> m_analysis;
++    QVector<int> m_classification; // -1 = 분석값 사용, 0 = 스케치, 1 = 싱크 (사용자 지정)
++    bool isSync(int index) const;
++
++    QLineEdit *m_pathEdit = nullptr;
++    QLabel *m_cardInfo = nullptr;
++    QTreeWidget *m_tree = nullptr;
++    QCheckBox *m_shakeCheck = nullptr;
++    QCheckBox *m_wbCheck = nullptr;
++    QCheckBox *m_exposureCheck = nullptr;
++    QCheckBox *m_noiseCheck = nullptr;
++    QPushButton *m_loadButton = nullptr;
++    QPushButton *m_analyzeButton = nullptr;
++    QPushButton *m_arrangeButton = nullptr;
++    QPushButton *m_exportButton = nullptr;
++    QProgressBar *m_progress = nullptr;
++    QLabel *m_status = nullptr;
++
++    QCheckBox *m_dateCheck = nullptr;
++    QComboBox *m_phraseCombo = nullptr;
++    QLineEdit *m_titleEdit = nullptr;
++    QLineEdit *m_outDirEdit = nullptr;
++    QLabel *m_namePreview = nullptr;
++
++    QAtomicInt m_pending = 0;
++    bool m_busy = false;
++};
++
++#endif // NEWSDOCK_H
+diff --git a/src/news/p2card.cpp b/src/news/p2card.cpp
+new file mode 100644
+index 0000000..d5be0d3
+--- /dev/null
++++ b/src/news/p2card.cpp
+@@ -0,0 +1,283 @@
++/*
++ * Copyright (c) 2026 JTBC News
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "p2card.h"
++
++#include <QDir>
++#include <QDomDocument>
++#include <QFile>
++#include <QFileInfo>
++#include <QHash>
++#include <QObject>
++#include <QStorageInfo>
++
++#include <algorithm>
++#include <utility>
++
++namespace {
++
++struct ClipInfo
++{
++    P2ClipPart part;
++    QString codec;
++    QString startTc;
++    QDateTime shootStart;
++    QString model;
++    QString top;
++    QString next;
++};
++
++QDomElement child(const QDomElement &e, const QString &name)
++{
++    return e.isNull() ? QDomElement() : e.firstChildElement(name);
++}
++
++QString findFile(const QString &dir, const QString &fileName)
++{
++    // P2 카드는 대문자 파일명이지만 복사본은 소문자일 수 있다.
++    QDir d(dir);
++    if (d.exists(fileName))
++        return d.absoluteFilePath(fileName);
++    const auto entries = d.entryList({fileName}, QDir::Files, QDir::NoSort);
++    for (const auto &e : entries) {
++        if (e.compare(fileName, Qt::CaseInsensitive) == 0)
++            return d.absoluteFilePath(e);
++    }
++    return d.absoluteFilePath(fileName);
++}
++
++QString escapeXml(const QString &s)
++{
++    return s.toHtmlEscaped();
++}
++
++} // namespace
++
++QString P2Shot::label() const
++{
++    QStringList names;
++    for (const auto &p : parts)
++        names << p.name;
++    return names.join('+');
++}
++
++int P2Shot::frames() const
++{
++    int total = 0;
++    for (const auto &p : parts)
++        total += p.frames;
++    return total;
++}
++
++int P2Shot::audioChannels() const
++{
++    int n = 99;
++    for (const auto &p : parts)
++        n = std::min(n, p.audioCount);
++    return parts.isEmpty() ? 0 : n;
++}
++
++bool P2Card::load(const QString &contentsDir, QString *error)
++{
++    m_shots.clear();
++    m_contentsDir = QDir(contentsDir).absolutePath();
++    QDir clipDir(m_contentsDir + "/CLIP");
++    if (!clipDir.exists()) {
++        if (error)
++            *error = QObject::tr("CLIP 폴더가 없습니다. P2 카드의 CONTENTS 폴더를 선택하세요.");
++        return false;
++    }
++
++    QHash<QString, ClipInfo> clips;
++    const auto files = clipDir.entryList({"*.XML", "*.xml"}, QDir::Files, QDir::Name);
++    for (const auto &f : files) {
++        QFile file(clipDir.absoluteFilePath(f));
++        if (!file.open(QIODevice::ReadOnly))
++            continue;
++        QDomDocument doc;
++        if (!doc.setContent(&file))
++            continue;
++        auto content = child(doc.documentElement(), "ClipContent");
++        if (content.isNull())
++            continue;
++        ClipInfo info;
++        info.part.name = child(content, "ClipName").text();
++        info.part.frames = child(content, "Duration").text().toInt();
++        auto essence = child(content, "EssenceList");
++        auto video = child(essence, "Video");
++        info.codec = child(video, "Codec").text();
++        info.startTc = child(video, "StartTimecode").text();
++        for (auto a = child(essence, "Audio"); !a.isNull(); a = a.nextSiblingElement("Audio"))
++            info.part.audioCount++;
++        auto meta = child(content, "ClipMetadata");
++        info.model = child(child(meta, "Device"), "ModelName").text();
++        info.shootStart = QDateTime::fromString(child(child(meta, "Shoot"), "StartDate").text(),
++                                                Qt::ISODate);
++        auto conn = child(child(content, "Relation"), "Connection");
++        info.top = conn.isNull() ? info.part.name : child(child(conn, "Top"), "ClipName").text();
++        info.next = child(child(conn, "Next"), "ClipName").text();
++        if (info.part.name.isEmpty() || info.part.frames <= 0)
++            continue;
++        clips.insert(info.part.name, info);
++    }
++
++    // 연결 클립은 첫 조각(Top)에서 Next를 따라가며 하나로 묶는다.
++    for (const auto &c : std::as_const(clips)) {
++        if (c.top != c.part.name)
++            continue;
++        P2Shot shot;
++        shot.codec = c.codec;
++        shot.startTimecode = c.startTc;
++        shot.shootStart = c.shootStart;
++        shot.model = c.model;
++        shot.parts << c.part;
++        const ClipInfo *cur = &c;
++        while (!cur->next.isEmpty() && clips.contains(cur->next)) {
++            cur = &clips[cur->next];
++            shot.parts << cur->part;
++        }
++        shot.continuesOnOtherCard = !cur->next.isEmpty();
++        m_shots << shot;
++    }
++    std::sort(m_shots.begin(), m_shots.end(), [](const P2Shot &a, const P2Shot &b) {
++        if (a.shootStart != b.shootStart)
++            return a.shootStart < b.shootStart;
++        return a.name() < b.name();
++    });
++    if (m_shots.isEmpty() && error)
++        *error = QObject::tr("클립을 찾지 못했습니다.");
++    return !m_shots.isEmpty();
++}
++
++QString P2Card::videoPath(const QString &clipName) const
++{
++    return findFile(m_contentsDir + "/VIDEO", clipName + ".MXF");
++}
++
++QString P2Card::audioPath(const QString &clipName, int channel) const
++{
++    return findFile(m_contentsDir + "/AUDIO",
++                    QStringLiteral("%1%2.MXF").arg(clipName).arg(channel, 2, 10, QChar('0')));
++}
++
++QString P2Card::proxyPath(const QString &clipName) const
++{
++    return findFile(m_contentsDir + "/PROXY", clipName + ".MOV");
++}
++
++QString P2Card::iconPath(const QString &clipName) const
++{
++    return findFile(m_contentsDir + "/ICON", clipName + ".BMP");
++}
++
++QString P2Card::shotXml(const P2Shot &shot) const
++{
++    const int total = shot.frames();
++    const int channels = shot.audioChannels();
++    QString x;
++    x += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
++    x += "<mlt LC_NUMERIC=\"C\" version=\"7.0.0\">\n";
++    // AVC-I 1080/59.94i: 29.97 프레임, 인터레이스, 16:9 (AVC-I 50은 1440x1080 SAR 4:3)
++    x += "  <profile description=\"HD 1080i 29.97 fps\" width=\"1920\" height=\"1080\" "
++         "progressive=\"0\" sample_aspect_num=\"1\" sample_aspect_den=\"1\" "
++         "display_aspect_num=\"16\" display_aspect_den=\"9\" frame_rate_num=\"30000\" "
++         "frame_rate_den=\"1001\" colorspace=\"709\"/>\n";
++
++    QStringList playlists;
++    auto addTrack = [&](const QString &id, int channel) {
++        QString entries;
++        for (int i = 0; i < shot.parts.size(); i++) {
++            const auto &p = shot.parts[i];
++            const QString pid = QStringLiteral("%1_%2").arg(id).arg(i);
++            const QString file = channel < 0 ? videoPath(p.name) : audioPath(p.name, channel);
++            x += QStringLiteral("  <producer id=\"%1\" in=\"0\" out=\"%2\">\n").arg(pid).arg(p.frames - 1);
++            x += QStringLiteral("    <property name=\"length\">%1</property>\n").arg(p.frames);
++            x += QStringLiteral("    <property name=\"resource\">%1</property>\n")
++                     .arg(escapeXml(QDir::fromNativeSeparators(file)));
++            x += "    <property name=\"mlt_service\">avformat</property>\n";
++            if (channel < 0) {
++                x += "    <property name=\"audio_index\">-1</property>\n";
++            } else {
++                x += "    <property name=\"video_index\">-1</property>\n";
++                // ch1 → 왼쪽, ch2 → 오른쪽. 모노 원본이 스테레오로 복제되므로 밸런스로 한쪽만 남긴다.
++                // tractor 필터로 걸면 mix 이후에 적용되므로 producer 안에 둔다.
++                // panner의 split은 애니메이션 속성이라 길이 없이 쓰면 무시된다 → start 사용.
++                if (channel <= 1) {
++                    x += "    <filter mlt_service=\"panner\">\n";
++                    x += "      <property name=\"channel\">-1</property>\n";
++                    x += QStringLiteral("      <property name=\"start\">%1</property>\n").arg(channel);
++                    x += "    </filter>\n";
++                    // mix 트랜지션이 입력마다 -3dB를 걸므로 원본 레벨로 보정 (실측 확인)
++                    x += "    <filter mlt_service=\"volume\">\n";
++                    x += "      <property name=\"level\">3.0103</property>\n";
++                    x += "    </filter>\n";
++                }
++            }
++            x += "  </producer>\n";
++            entries += QStringLiteral("    <entry producer=\"%1\" in=\"0\" out=\"%2\"/>\n")
++                           .arg(pid)
++                           .arg(p.frames - 1);
++        }
++        x += QStringLiteral("  <playlist id=\"%1\">\n").arg(id) + entries + "  </playlist>\n";
++        playlists << id;
++    };
++
++    addTrack("video", -1);
++    for (int ch = 0; ch < channels; ch++)
++        addTrack(QStringLiteral("ch%1").arg(ch + 1), ch);
++
++    x += QStringLiteral("  <tractor id=\"tractor0\" in=\"0\" out=\"%1\">\n").arg(total - 1);
++    x += QStringLiteral("    <property name=\"news:p2clip\">%1</property>\n").arg(shot.label());
++    x += QStringLiteral("    <property name=\"news:startTimecode\">%1</property>\n").arg(shot.startTimecode);
++    for (int i = 0; i < playlists.size(); i++) {
++        const bool hideAudio = (i == 0 || i >= 3);
++        x += QStringLiteral("    <track producer=\"%1\"%2/>\n")
++                 .arg(playlists[i], hideAudio ? " hide=\"audio\"" : "");
++    }
++    for (int i = 1; i < playlists.size(); i++) {
++        x += "    <transition mlt_service=\"mix\">\n";
++        x += "      <property name=\"a_track\">0</property>\n";
++        x += QStringLiteral("      <property name=\"b_track\">%1</property>\n").arg(i);
++        x += "      <property name=\"sum\">1</property>\n";
++        x += "      <property name=\"always_active\">1</property>\n";
++        x += "    </transition>\n";
++    }
++    x += "  </tractor>\n</mlt>\n";
++    return x;
++}
++
++QString P2Card::writeShotMlt(const P2Shot &shot, const QString &outDir) const
++{
++    QDir().mkpath(outDir);
++    const QString path = QDir(outDir).absoluteFilePath(shot.name() + ".mlt");
++    QFile f(path);
++    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
++        return QString();
++    f.write(shotXml(shot).toUtf8());
++    return path;
++}
++
++QString P2Card::defaultContentsDir()
++{
++    // 이동식 디스크 중 CONTENTS/CLIP이 있는 첫 드라이브
++    for (const auto &vol : QStorageInfo::mountedVolumes()) {
++        const QString dir = QDir(vol.rootPath()).absoluteFilePath("CONTENTS");
++        if (QFileInfo::exists(dir + "/CLIP"))
++            return dir;
++    }
++    return QStringLiteral("E:/CONTENTS");
++}
+diff --git a/src/news/p2card.h b/src/news/p2card.h
+new file mode 100644
+index 0000000..951327a
+--- /dev/null
++++ b/src/news/p2card.h
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (c) 2026 JTBC News
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef P2CARD_H
++#define P2CARD_H
++
++#include <QDateTime>
++#include <QList>
++#include <QString>
++#include <QStringList>
++
++// P2 카드 한 조각(클립 XML 하나)
++struct P2ClipPart
++{
++    QString name;      // 예: 0011UY
++    int frames = 0;    // 29.97 기준 프레임 수
++    int audioCount = 0;
++};
++
++// 연결 클립을 하나로 묶은 촬영 단위(샷)
++struct P2Shot
++{
++    QList<P2ClipPart> parts;
++    QString codec;
++    QString startTimecode;
++    QDateTime shootStart;
++    QString model;
++    bool continuesOnOtherCard = false;
++
++    QString name() const { return parts.isEmpty() ? QString() : parts.first().name; }
++    QString label() const;
++    int frames() const;
++    int audioChannels() const;
++    double seconds() const { return frames() * 1001.0 / 30000.0; }
++};
++
++class P2Card
++{
++public:
++    // contentsDir: P2 카드의 CONTENTS 폴더
++    bool load(const QString &contentsDir, QString *error = nullptr);
++
++    const QList<P2Shot> &shots() const { return m_shots; }
++    QString contentsDir() const { return m_contentsDir; }
++
++    QString videoPath(const QString &clipName) const;
++    QString audioPath(const QString &clipName, int channel) const;
++    QString proxyPath(const QString &clipName) const;
++    QString iconPath(const QString &clipName) const;
++
++    // 영상 + 채널별 음성 + 연결 클립을 하나로 묶은 MLT XML을 만든다.
++    // ch1 → 왼쪽, ch2 → 오른쪽, ch3·4는 기본 음소거.
++    QString shotXml(const P2Shot &shot) const;
++    QString writeShotMlt(const P2Shot &shot, const QString &outDir) const;
++
++    static QString defaultContentsDir();
++
++private:
++    QString m_contentsDir;
++    QList<P2Shot> m_shots;
++};
++
++#endif // P2CARD_H
